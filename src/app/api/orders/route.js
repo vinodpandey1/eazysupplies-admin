@@ -86,6 +86,23 @@ export async function POST(request) {
     if (!requestedItems.length) {
       return NextResponse.json({ error: "Your cart is empty." }, { status: 400 });
     }
+
+    const requiredShippingFields = ["address", "city", "state", "postalCode", "country"];
+    const missingShippingFields = requiredShippingFields.filter(
+      (field) => !String(shipping?.[field] ?? "").trim()
+    );
+    if (missingShippingFields.length) {
+      return NextResponse.json(
+        {
+          error: "A complete delivery address is required to place an order.",
+          fields: missingShippingFields,
+        },
+        { status: 400 }
+      );
+    }
+    const validatedShipping = Object.fromEntries(
+      requiredShippingFields.map((field) => [field, String(shipping[field]).trim()])
+    );
     const productIds = [...new Set(requestedItems.map((item) => Number(item.productId)))];
 
     const order = await prisma.$transaction(async (tx) => {
@@ -110,7 +127,7 @@ export async function POST(request) {
           userId: Number(payload.userId),
           jsonData,
           items: { create: items },
-          shipping: shipping ? { create: shipping } : undefined,
+          shipping: { create: validatedShipping },
           payment: payment ? {
             create: {
               ...payment,

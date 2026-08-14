@@ -19,7 +19,7 @@ model User {
   email     String    @unique
   password  String
   roleId    Int
-  status    Boolean   @default(false)
+  status    Boolean   @default(true)
   profileImagepath String?
   lastLoginDt    DateTime?
   countryCode String    @default("+91")

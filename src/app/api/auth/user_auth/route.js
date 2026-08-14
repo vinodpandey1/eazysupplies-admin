@@ -96,7 +96,7 @@ export async function POST(request) {
                     password: hashedPassword,
                     countryCode,
                     phone: `${phone}`,
-                    status: false,
+                    status: true,
                     gstn,
                     roleId: userRole.id,
                     otp: random
