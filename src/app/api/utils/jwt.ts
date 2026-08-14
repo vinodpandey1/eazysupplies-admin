@@ -25,7 +25,11 @@ export function verifyJwt(token: string) {
 }
 
 export async function authenticate(request) {
-  const token = parseAuthCookie(request.headers.get("cookie"));
+  const authorization = request.headers.get("authorization") || "";
+  const bearerToken = authorization.toLowerCase().startsWith("bearer ")
+    ? authorization.slice(7).trim()
+    : null;
+  const token = parseAuthCookie(request.headers.get("cookie")) || bearerToken;
   return token ? verifyJwt(token) : null;
 }
 
