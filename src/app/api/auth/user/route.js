@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { parseAuthCookie, verifyJwt } from "../../utils/jwt";
+import { authenticate } from "../../utils/jwt";
 import { sendEmail, sendWhatsApp, createNotification, sendWhatsAppUserReg } from "../../utils/emailUtils";
 import { hashSync } from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
@@ -23,21 +23,11 @@ const MESSAGES = {
 };
 
 /**
- * Authenticate user from JWT in cookies
- * @param {Request} request
- * @returns {object|null} payload
- */
-function authenticate(request) {
-  const token = parseAuthCookie(request.headers.get("cookie"));
-  return token ? verifyJwt(token) : null;
-}
-
-/**
  * GET handler - returns authenticated user info
  */
 
 export async function GET(request) {
-  const payload = authenticate(request);
+  const payload = await authenticate(request);
 
   if (!payload) {
     return NextResponse.json({ error: MESSAGES.UNAUTHORIZED }, { status: 401 });
