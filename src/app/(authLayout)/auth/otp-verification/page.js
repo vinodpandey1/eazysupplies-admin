@@ -1,117 +1,95 @@
 "use client";
-import axios from "axios";
-import ShowBox from "../../../../elements/alerts&Modals/ShowBox";
-import { obscureEmail } from "../../../../utils/customFunctions/EmailFormats";
-import LoginBoxWrapper from "../../../../utils/hoc/LoginBoxWrapper";
-import NoSsr from "../../../../utils/hoc/NoSsr";
-import useHandleForgotPassword from "../../../../utils/hooks/auth/useForgotPassword";
-import useOtpVerification from "../../../../utils/hooks/auth/useOtpVerification";
+
+import ShowBox from "@/elements/alerts&Modals/ShowBox";
+import LoginBoxWrapper from "@/utils/hoc/LoginBoxWrapper";
+import request from "@/utils/axiosUtils";
 import Cookies from "js-cookie";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Input } from "reactstrap";
-import { useRouter } from "next/navigation";
 
 const OtpVerification = () => {
   const router = useRouter();
   const { t } = useTranslation("common");
-  const [showBoxMessage, setShowBoxMessage] = useState();
-  //const cookies = Cookies.get("ue");
-  const [cookies, setCookie] = useState('');
-  const [seconds, setSeconds] = useState();
+  const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
-  const { mutate: otpVerification } = useOtpVerification(setShowBoxMessage);
-  const { mutate: forgotPassword } = useHandleForgotPassword(setShowBoxMessage);
-  const handleChange = (e) => {
-    if (e.target.value.length <= 6 && !isNaN(Number(e.target.value))) {
-      setOtp(e.target.value);
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [showBoxMessage, setShowBoxMessage] = useState();
+
+  useEffect(() => {
+    const resetEmail = Cookies.get("ue") || localStorage.getItem("passwordResetEmail") || "";
+    setEmail(resetEmail);
+    if (!resetEmail) router.replace("/auth/forgot-password");
+  }, [router]);
+
+  const resetPassword = async () => {
+    if (!/^\d{6}$/.test(otp)) {
+      return setShowBoxMessage({ type: "error", message: "Enter the 6-digit verification code" });
+    }
+    if (password.length < 8 || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      return setShowBoxMessage({ type: "error", message: "Password must be at least 8 characters and include an uppercase letter and number" });
+    }
+    if (password !== confirmPassword) {
+      return setShowBoxMessage({ type: "error", message: "Passwords do not match" });
+    }
+
+    try {
+      setLoading(true);
+      const response = await request({
+        url: "/auth/password-reset",
+        method: "post",
+        data: { action: "reset", email, otp, password, audience: "admin" },
+      }, router);
+      setShowBoxMessage({ type: "success", message: response?.data?.message || "Password updated successfully" });
+      Cookies.remove("ue", { path: "/" });
+      localStorage.removeItem("passwordResetEmail");
+      setTimeout(() => router.replace("/auth/login"), 900);
+    } catch (error) {
+      setShowBoxMessage({ type: "error", message: error?.response?.data?.error || "Unable to reset password" });
+    } finally {
+      setLoading(false);
     }
   };
 
-  const verifyOtp = async () => {
+  const resend = async () => {
     try {
-      if (otp && otp.length === 6) {
-        let res = await axios.get(`/api/auth/login?email=${cookies}&otp=${otp}&action=activateUser`, { withCredentials: true });
-        console.log('............', res);
-        if (res.status == 200) {
-          alert(res.data.message);
-          return router.push('/auth/login');
-        }
-      }
-
-    } catch (err) {
-      alert(err);
-      console.log(err);
+      setLoading(true);
+      const response = await request({
+        url: "/auth/password-reset",
+        method: "post",
+        data: { action: "request", email, audience: "admin" },
+      }, router);
+      setShowBoxMessage({ type: "success", message: response?.data?.message || "Verification code resent" });
+    } catch (error) {
+      setShowBoxMessage({ type: "error", message: error?.response?.data?.error || "Unable to resend code" });
+    } finally {
+      setLoading(false);
     }
-  }
+  };
 
-  useEffect(() => {
-    setCookie(localStorage.getItem('email'));
-  }, []);
-
-  useEffect(() => {
-    const otpTimer =
-      Boolean(seconds) && setInterval(() => setSeconds(seconds - 1), 1000);
-    return () => {
-      clearInterval(otpTimer);
-    };
-  }, [seconds]);
   return (
-    <>
-      <div className="box-wrapper">
-        <ShowBox showBoxMessage={showBoxMessage} />
-        <LoginBoxWrapper>
-          <div className="log-in-title">
-            <h3 className="text-content">
-              {t("PleasEnterTheOneTimePasswordToVerifyYourAccount")}
-            </h3>
-            <h5 className="text-content">
-              {t("ACodeHasBeenSentTo") + " "}
-              <span>
-                <NoSsr>{obscureEmail(cookies)}</NoSsr>
-              </span>
-            </h5>
-          </div>
-          <div className="outer-otp">
-            <div className="inner-otp">
-              <Input
-                type="text"
-                maxLength="6"
-                onChange={handleChange}
-                value={otp}
-              />
-            </div>
-          </div>
-          <div className="AlignDivToCenter">
-            <button className="otpBtn" onClick={verifyOtp}>Verify</button>
-          </div>
-          <div className="send-box pt-4">
-            {seconds ? (
-              <h5>
-                {t("PleaseWait")}
-                <a className="theme-color fw-bold">
-                  {seconds} <NoSsr>{t("second(s)")}</NoSsr>3
-                </a>
-                {t("BeforeRequestingANewOneTimePassword(OTP)")}.
-              </h5>
-            ) : (
-              <h5>
-                {t("Didn'tGetTheOTP")}?
-                <a
-                  className="theme-color fw-bold"
-                  onClick={() => {
-                    forgotPassword({ email: cookies });
-                    setSeconds(60);
-                  }}
-                >
-                  {t("ResendIt")}
-                </a>
-              </h5>
-            )}
-          </div>
-        </LoginBoxWrapper>
-      </div>
-    </>
+    <div className="box-wrapper">
+      <ShowBox showBoxMessage={showBoxMessage} />
+      <LoginBoxWrapper>
+        <div className="log-in-title">
+          <h3>{t("ResetPassword") || "Reset Password"}</h3>
+          <h5>Enter the code sent to {email || "your email"} and choose a new password.</h5>
+        </div>
+        <div className="input-box d-grid gap-3">
+          <Input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="6-digit verification code" />
+          <Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="New password" />
+          <Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm new password" />
+          <button className="btn btn-animation w-100" type="button" onClick={resetPassword} disabled={loading}>Reset Password</button>
+          <button className="btn btn-link" type="button" onClick={resend} disabled={loading}>Resend verification code</button>
+          <Link href="/auth/login" className="text-center">Back to login</Link>
+        </div>
+      </LoginBoxWrapper>
+    </div>
   );
 };
+
 export default OtpVerification;

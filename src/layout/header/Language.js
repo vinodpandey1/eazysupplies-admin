@@ -1,5 +1,6 @@
 import useOutsideDropdown from "../../utils/hooks/customHooks/useOutsideDropdown";
 import i18next from "i18next";
+import Cookies from "js-cookie";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -14,14 +15,15 @@ const Language = () => {
   // To change Language
   const handleChangeLang = (value) => {
     setSelectedLang(value);
+    Cookies.set("i18next", value.lang, { expires: 365, path: "/", sameSite: "lax" });
     i18next.changeLanguage(value.lang);
     router.refresh();
   };
   const langData = [
     { LanuageName: "English", lang: "en", icon: "us" },
-  //  { LanuageName: "French", lang: "fr", icon: "fr" },
-  //  { LanuageName: "Spanish", lang: "es", icon: "es" },
-  //  { LanuageName: "Arabic", lang: "ar", icon: "ar" },
+    { LanuageName: "Français", lang: "fr", icon: "fr" },
+    { LanuageName: "Español", lang: "es", icon: "es" },
+    { LanuageName: "العربية", lang: "ar", icon: "ar" },
   ];
 
   return (

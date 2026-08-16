@@ -4,6 +4,7 @@ import ShowBox from "@/elements/alerts&Modals/ShowBox";
 import Btn from "@/elements/buttons/Btn";
 import LoginBoxWrapper from "@/utils/hoc/LoginBoxWrapper";
 import { ForgotPasswordSchema } from "@/utils/hooks/auth/useForgotPassword";
+import useHandleForgotPassword from "@/utils/hooks/auth/useForgotPassword";
 import { Field, Form, Formik } from "formik";
 import Link from "next/link";
 import { useState } from "react";
@@ -12,6 +13,7 @@ import { Col } from "reactstrap";
 
 const ForgotPassword = () => {
   const [showBoxMessage, setShowBoxMessage] = useState();
+  const { mutate, isPending } = useHandleForgotPassword(setShowBoxMessage);
   const { t } = useTranslation("common");
   return (
     <div className="box-wrapper">
@@ -27,7 +29,7 @@ const ForgotPassword = () => {
               email: "",
             }}
             validationSchema={ForgotPasswordSchema}
-            onSubmit={(values) => router.push(`/auth/otp-verification`)}
+            onSubmit={(values) => mutate(values)}
           >
             {() => (
               <Form className="row g-2">
@@ -35,7 +37,7 @@ const ForgotPassword = () => {
                   <Field name="email" component={ReactstrapInput} className="form-control" id="email" placeholder="Email Address" label="EmailAddress" />
                 </Col>
                 <Col sm="12">
-                  <Btn title="SendEmail" className="btn btn-animation w-100 justify-content-center" type="submit" color="false" />
+                  <Btn title="SendEmail" className="btn btn-animation w-100 justify-content-center" type="submit" color="false" loading={Number(isPending)} />
                 </Col>
                 <Col sm="12">
                   <div className="sign-up-box">

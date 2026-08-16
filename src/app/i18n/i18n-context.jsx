@@ -13,6 +13,8 @@ i18next
   .init({
     ...getOptions(),
     detection: {
+      order: ["cookie"],
+      lookupCookie: "i18next",
       caches: ["cookie"],
     },
   });
