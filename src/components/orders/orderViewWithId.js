@@ -94,23 +94,25 @@ const OrderViewWithId = ({ id }) => {
     }
 
     const updateOrderStatus = async (id, action) => {
+        const isApproval = action === "APPROVED";
         try {
-            action == "APPROVED" ? setIsApprove(true) : setIsReject(true);
+            isApproval ? setIsApprove(true) : setIsReject(true);
             const res = await axios.put('/api/orders', {
                 id: Number(id),
-                status: action.toUpperCase(),
-                approved: action.toUpperCase() === "APPROVED"
+                status: action,
+                approved: isApproval
             }, { withCredentials: true });
 
             if (res.status === 200) {
-                alert(`Order ${action.toUpperCase()} successfully!`);
-                let res = await axios.get('/api/invoice?orderId=' + id, { withCredentials: true });
-                handleStateChange('refreshState', true);
+                await fetchProduct();
+                alert(`Order ${action} successfully!`);
             }
-            action == "APPROVED" ? setIsApprove(false) : setIsReject(false);
         } catch (err) {
-            console.error('error', "Something went wrong, please try again!");
-            action == "APPROVED" ? setIsApprove(false) : setIsReject(false);
+            const message = err?.response?.data?.error || err?.response?.data?.msg || "Something went wrong, please try again!";
+            console.error('Order status update failed', err);
+            alert(message);
+        } finally {
+            isApproval ? setIsApprove(false) : setIsReject(false);
         }
     };
     function generateProductDiscount(product, ordId) {

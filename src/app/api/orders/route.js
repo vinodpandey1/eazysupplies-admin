@@ -206,6 +206,9 @@ export async function PUT(request) {
             payment: true,
           },
         });
+        if (!orders) {
+          return NextResponse.json({ msg: "Order details not found!" }, { status: 404 });
+        }
  //       await generateTaxDiscount(orders);
         const Products = await prisma.product.findMany();
         let _jsonData = [];
@@ -301,40 +304,49 @@ export async function PUT(request) {
            }
          });
          
-        const notification = await prisma.notification.create({
-          data: {
-            name: 'Order ' + id + ' approved',
-            type: "notification",
-            remarks: "Order Number " + id + " approved by Admin, Please proceed for payment",
-            recepient: orders?.userId.toString()
-          }
-        });
-        //return NextResponse.json(result);
-        // return NextResponse.json({ offer, Products, filterProduct });
         const itemsTextapproved = orders.items
           .map((item) => {
             return `${item.product.name} X ${item.quantity}`;
           })
           .join('\n');
-          // Generate once when the order becomes invoice-ready. Downloads serve this stored file.
-          await generateInvoicePdf(orders.id, { force: true });
         const orderhtml = generateApprovedOrderSummaryHTML(orders, Number(orders.userId), orders?.user?.name);
-        await sendEmail(orders?.user?.email, "Order Approved with " + result.id, orderhtml);
-        await createNotification("Order Approved with " + orders.id, orders?.userId?.toString(), orderhtml);
-        await sendWhatsAppOrderCreate(orders?.user?.name, orders?.user?.countryCode + orders?.user?.phone, orders.id, "Status : Approved", itemsTextapproved);
 
-        return NextResponse.json("approved");
+        // The status transition is the primary operation. Invoice generation and outbound
+        // notifications must not turn a successful approval into a 500 response.
+        void Promise.allSettled([
+          prisma.notification.create({
+            data: {
+              name: 'Order ' + id + ' approved',
+              type: "notification",
+              remarks: "Order Number " + id + " approved by Admin, Please proceed for payment",
+              recepient: String(orders.userId ?? "")
+            }
+          }),
+          generateInvoicePdf(orders.id, { force: true }),
+          sendEmail(orders?.user?.email, "Order Approved with " + result.id, orderhtml),
+          createNotification("Order Approved with " + orders.id, orders?.userId?.toString(), orderhtml),
+          sendWhatsAppOrderCreate(orders?.user?.name, orders?.user?.countryCode + orders?.user?.phone, orders.id, "Status : Approved", itemsTextapproved)
+        ]).then((results) => {
+          results.forEach((result, index) => {
+            if (result.status === "rejected") {
+              console.error(`Order ${id} post-approval task ${index + 1} failed:`, result.reason);
+            }
+          });
+        });
+
+        return NextResponse.json({ msg: "Approved", order: result });
       } else if (status == "REJECTED") {
         const order = await prisma.order.findUnique({ where: { id: id } });
         if (!order) {
           return NextResponse.json({ msg: "Order details not found!" }, { status: 404 });
         }
-        let update = await prisma.order.update({ where: { id: id }, data:{ status : status} });
-        return NextResponse.json({msg: "Rejected"}, { status: 200 });
+        const update = await prisma.order.update({ where: { id: id }, data: { status, approved: false } });
+        return NextResponse.json({ msg: "Rejected", order: update }, { status: 200 });
       } else {
-       return NextResponse.json({ msg: "Invalid method!" });
+       return NextResponse.json({ msg: "Invalid order status" }, { status: 400 });
       }
     }
+    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
   } catch (Error) {
     console.log(Error);
     return NextResponse.json(
