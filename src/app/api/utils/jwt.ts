@@ -236,6 +236,7 @@ const INVOICE_TEMPLATE = `
             --text-muted: #65a30d;
             --border-color: #dcfce7;
         }
+        * { box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Roboto, sans-serif; 
             color: var(--text-dark); 
@@ -271,8 +272,8 @@ const INVOICE_TEMPLATE = `
             padding: 30px 40px;
             border-bottom: 1px solid var(--border-color);
         }
-        .table-container { padding: 20px 30px; }
-        table { width: 100%; border-collapse: collapse; min-width: 900px; }
+        .table-container { padding: 20px 30px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         th { 
             text-align: right; 
             font-size: 11px; 
@@ -281,8 +282,9 @@ const INVOICE_TEMPLATE = `
             padding: 8px 4px;
             border-bottom: 2px solid var(--border-color);
         }
-        th:first-child, td:first-child { text-align: left; }
+        th:first-child, td:first-child { text-align: left; overflow-wrap: anywhere; }
         td { padding: 12px 8px; border-bottom: 1px solid var(--border-color); font-size: 11px; text-align: right; }
+        th:not(:first-child), td:not(:first-child) { white-space: nowrap; }
         .product-info { font-weight: 700; color: var(--brand-green); }
         .discount-text { color: #be123c; font-size: 11px; }
         .tax-text { color: #0369a1; font-size: 11px; }
@@ -303,6 +305,19 @@ const INVOICE_TEMPLATE = `
             color: var(--brand-green);
         }
         .footer { text-align: center; padding: 20px; font-size: 12px; color: var(--text-muted); }
+        @media screen and (max-width: 900px) {
+            table { min-width: 860px; }
+        }
+        @media print {
+            @page { size: A4 landscape; margin: 10mm; }
+            body { background: #fff; padding: 0; }
+            .invoice-card { max-width: none; box-shadow: none; border-radius: 0; }
+            .table-container { padding: 16px 20px; overflow: visible; }
+            table { min-width: 0; }
+            thead { display: table-header-group; }
+            tr { break-inside: avoid; page-break-inside: avoid; }
+            .header-top, .details-section, .summary-container { break-inside: avoid; page-break-inside: avoid; }
+        }
     </style>
 </head>
 <body>
@@ -331,6 +346,16 @@ const INVOICE_TEMPLATE = `
         </div>
         <div class="table-container">
             <table>
+                <colgroup>
+                    <col style="width: 28%;">
+                    <col style="width: 7%;">
+                    <col style="width: 12%;">
+                    <col style="width: 8%;">
+                    <col style="width: 11%;">
+                    <col style="width: 12%;">
+                    <col style="width: 10%;">
+                    <col style="width: 12%;">
+                </colgroup>
                 <thead>
                     <tr>
                         <th style="width: 20%;">Product Description</th>

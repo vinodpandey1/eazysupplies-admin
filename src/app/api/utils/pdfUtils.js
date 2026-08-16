@@ -6,7 +6,7 @@ import { handleHtmlFromOrder } from "./jwt";
 
 const prisma = new PrismaClient();
 const inFlight = new Map();
-const INVOICE_TEMPLATE_VERSION = "2026-08-16-v2";
+const INVOICE_TEMPLATE_VERSION = "2026-08-16-v3";
 
 export function getInvoiceFilename(orderId) {
   return `performa-invoice${Number(orderId)}.pdf`;
