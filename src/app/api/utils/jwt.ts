@@ -313,10 +313,20 @@ const INVOICE_TEMPLATE = `
             @page { size: A4 landscape; margin: 10mm; }
             body { background: #fff; padding: 0; }
             .invoice-card { max-width: none; box-shadow: none; border-radius: 0; }
-            .table-container { padding: 16px 20px; overflow: visible; }
+            .header-top { padding: 14px 24px; }
+            .logo-img { height: 34px; }
+            .details-section { padding: 14px 24px; }
+            .table-container { padding: 8px 16px; overflow: visible; }
             table { min-width: 0; }
+            th { padding: 6px 4px; }
+            td { padding: 7px 6px; }
             thead { display: table-header-group; }
             tr { break-inside: avoid; page-break-inside: avoid; }
+            .summary-container { padding: 12px 24px; }
+            .summary-line { padding: 3px 0; font-size: 12px; }
+            .total-line { margin-top: 6px; padding-top: 6px; font-size: 17px; }
+            .footer { padding: 5px 20px; font-size: 10px; line-height: 1.15; }
+            .footer p { margin: 1px 0; }
             .header-top, .details-section, .summary-container, .footer { break-inside: avoid; page-break-inside: avoid; }
         }
     </style>
