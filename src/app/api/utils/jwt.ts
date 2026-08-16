@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { OrderEmailTemp } from '@/utils/constants';
 import crypto from "crypto";
 import { JsonObject, JsonArray } from '@prisma/client/runtime/library';
+import { calculateInvoiceTotals, normalizeInvoiceLines } from './invoiceMath';
 const prisma = new PrismaClient();
 
 export function parseAuthCookie(cookie: string | null): string | null {
@@ -387,29 +388,28 @@ const INVOICE_TEMPLATE = `
   
   const userId = orderData?.user?.id;
 
- const productString = orderData?.jsonOrderData as string;
-
- const safeParse = (data: string) => {
-    if (typeof data !== 'string') return data;
-    try {
-        const result = JSON.parse(data);
-        // Recursively parse if it's still a string (double-encoded)
-        return typeof result === 'string' ? safeParse(result) : result;
-    } catch {
-        return []; // Return empty array on failure
-    }
-};
-
-const products = safeParse(productString);
-
-  const totals = products.reduce((acc, item) => {
-  return {
-    grossTotal: acc.grossTotal + (item.price * item.quantity),
-    totalDiscount: acc.totalDiscount + (item._discountAmount * item.quantity),
-    totalTax: acc.totalTax + (item.taxamt * item.quantity),
-    grandTotal: acc.grandTotal + (item.totalprice * item.quantity)
-  };
-}, { grossTotal: 0, totalDiscount: 0, totalTax: 0, grandTotal: 0 });
+let products = normalizeInvoiceLines(orderData?.jsonOrderData);
+if (products.length !== (orderData?.items?.length ?? 0)) {
+  products = await Promise.all((orderData?.items ?? []).map(async (item) => {
+    const quantity = Number(item.quantity) || 1;
+    const price = Number(item.price ?? item.product?.price) || 0;
+    const tax = item.product?.tax
+      ? await prisma.tax.findUnique({ where: { id: Number(item.product.tax) } })
+      : null;
+    const taxAmount = (price * (Number(tax?.value) || 0)) / 100;
+    return {
+      name: item.product?.name || "Item",
+      quantity,
+      price,
+      discountPercentage: 0,
+      discountAmount: 0,
+      sellingPrice: price,
+      taxAmount,
+      totalPrice: (price + taxAmount) * quantity,
+    };
+  }));
+}
+const totals = calculateInvoiceTotals(products);
 
 // Outputting formatted strings for your invoice
 const formattedTotals = {
@@ -423,12 +423,12 @@ const formattedTotals = {
 // Assuming 'products' is your parsed JSON array
 const items_html = products.map((item) => {
     // Basic calculations based on your JSON structure
-    const unitPrice = Number(item.price).toFixed(2);
-    const discPercent = Number(item.discountPercentage).toFixed(2);
-    const discAmt = Number(item._discountAmount).toFixed(2);
-    const sellingPrice = Number(item.sellingPrice).toFixed(2);
-    const taxAmt = Number(item.taxamt).toFixed(2);
-    const totalPrice = Number(item.totalprice).toFixed(2);
+    const unitPrice = item.price.toFixed(2);
+    const discPercent = item.discountPercentage.toFixed(2);
+    const discAmt = item.discountAmount.toFixed(2);
+    const sellingPrice = item.sellingPrice.toFixed(2);
+    const taxAmt = item.taxAmount.toFixed(2);
+    const totalPrice = item.totalPrice.toFixed(2);
 
     return `
     <tr>

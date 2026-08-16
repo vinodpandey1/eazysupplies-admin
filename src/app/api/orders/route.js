@@ -5,7 +5,6 @@ import { MESSAGES } from "../utils/statusConstant";
 import { generateOrderSummaryHTML, generateApprovedOrderSummaryHTML, sendEmail, sendWhatsAppOrderCreate } from "../utils/emailUtils";
 import { createNotification } from "../utils/emailUtils";
 import { generateInvoicePdf } from "../utils/pdfUtils";
-import { convertDate, calcDate } from "../utils/dateUtils";
 
 const prisma = new PrismaClient();
 const recentRequests = new Map();
@@ -218,8 +217,6 @@ export async function PUT(request) {
             }
           });
 
-          if (offer.length === 0) continue; // skip if no offer
-
           const filterProduct = Products.filter(
             (p) => Number(el.product?.id) === p.id
           );
@@ -272,7 +269,7 @@ export async function PUT(request) {
           where: {
             id: el.product?.tax,
           },});
-          let taxamt = tax.value && tax.value > 0 ? ((price - (_discountAmount ? _discountAmount : 0)) * tax.value) / 100 : 0 ;
+          let taxamt = tax?.value && tax.value > 0 ? ((price - (_discountAmount || 0)) * tax.value) / 100 : 0;
           
     //     console.log(el.quantity);
     //     console.log(el.price);
@@ -319,26 +316,8 @@ export async function PUT(request) {
             return `${item.product.name} X ${item.quantity}`;
           })
           .join('\n');
-          const cdt = await convertDate(orders.createdAt) ; 
-          const ddt = await calcDate(orders.createdAt,7) ; 
-          console.log(result.jsonOrderData);
-          let data = {
-              company: { name: "Earthling Consumer Products Pvt. Ltd.", address: "52/39, LGF, Ramjas Road, Karol Bagh, New Delhi 1100053", email : "contact@earthlingco.in" },
-              customer: { 
-                name: orders.user.name, 
-                phone: orders.user.phone, 
-                address: orders.shipping.address 
-              },
-              orderDate : cdt,
-              dueDate : ddt,
-              items: result.jsonOrderData,
-              bankDetails: {
-                bankName: "HDFC Bank",
-                accountNo: "987654321",
-                ifc: "GLB001"
-              }
-            };
-          await generateInvoicePdf(orders.id,data);
+          // Generate once when the order becomes invoice-ready. Downloads serve this stored file.
+          await generateInvoicePdf(orders.id, { force: true });
         const orderhtml = generateApprovedOrderSummaryHTML(orders, Number(orders.userId), orders?.user?.name);
         await sendEmail(orders?.user?.email, "Order Approved with " + result.id, orderhtml);
         await createNotification("Order Approved with " + orders.id, orders?.userId?.toString(), orderhtml);
