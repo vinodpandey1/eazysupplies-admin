@@ -6,6 +6,7 @@ import { handleHtmlFromOrder } from "./jwt";
 
 const prisma = new PrismaClient();
 const inFlight = new Map();
+const INVOICE_TEMPLATE_VERSION = "2026-08-16-v2";
 
 export function getInvoiceFilename(orderId) {
   return `performa-invoice${Number(orderId)}.pdf`;
@@ -18,7 +19,9 @@ export function getInvoiceFilePath(orderId) {
 
 async function renderInvoice(orderId, force) {
   const filePath = getInvoiceFilePath(orderId);
-  if (!force && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) return filePath;
+  const versionPath = `${filePath}.version`;
+  const isCurrent = fs.existsSync(versionPath) && fs.readFileSync(versionPath, "utf8").trim() === INVOICE_TEMPLATE_VERSION;
+  if (!force && isCurrent && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) return filePath;
 
   const { html, userId } = await handleHtmlFromOrder(Number(orderId));
   if (!html) throw new Error(`Invoice data was not found for order ${orderId}`);
@@ -44,6 +47,7 @@ async function renderInvoice(orderId, force) {
       margin: { top: 10, bottom: 10, left: 5, right: 5 },
     });
     fs.renameSync(temporaryPath, filePath);
+    fs.writeFileSync(versionPath, INVOICE_TEMPLATE_VERSION);
   } finally {
     if (browser) await browser.close();
     if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);

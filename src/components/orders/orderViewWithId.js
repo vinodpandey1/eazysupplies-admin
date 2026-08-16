@@ -207,19 +207,8 @@ const OrderViewWithId = ({ id }) => {
 
     const handleHtmlToPdf = async (id, popup = true) => {
         setIsLoading(true);
-        const res = await axios.get('/api/file/htmlToPdf?orderId=' + id, {
-        }, { withCredentials: true });
-        console.log('response', res);
-        if (res.status == 200) {
-            if (popup) {
-                alert(res.data?.message);
-                setIsLoading(false);
-                window.open(res?.data?.path, "_blank");
-            }
-        } else {
-            setIsLoading(false);
-        }
-
+        if (popup) window.open(`/api/invoice/${id}/pdf`, "_blank", "noopener,noreferrer");
+        setIsLoading(false);
     }
 
     const handlePayment = (id) => {

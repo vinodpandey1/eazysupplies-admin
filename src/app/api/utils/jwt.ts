@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { OrderEmailTemp } from '@/utils/constants';
 import crypto from "crypto";
 import { JsonObject, JsonArray } from '@prisma/client/runtime/library';
-import { calculateInvoiceTotals, normalizeInvoiceLines } from './invoiceMath';
+import { calculateInvoiceTotals, finiteNumber, parseInvoiceItems } from './invoiceMath';
 const prisma = new PrismaClient();
 
 export function parseAuthCookie(cookie: string | null): string | null {
@@ -388,27 +388,36 @@ const INVOICE_TEMPLATE = `
   
   const userId = orderData?.user?.id;
 
-let products = normalizeInvoiceLines(orderData?.jsonOrderData);
-if (products.length !== (orderData?.items?.length ?? 0)) {
-  products = await Promise.all((orderData?.items ?? []).map(async (item) => {
-    const quantity = Number(item.quantity) || 1;
-    const price = Number(item.price ?? item.product?.price) || 0;
-    const tax = item.product?.tax
-      ? await prisma.tax.findUnique({ where: { id: Number(item.product.tax) } })
-      : null;
-    const taxAmount = (price * (Number(tax?.value) || 0)) / 100;
-    return {
-      name: item.product?.name || "Item",
-      quantity,
-      price,
-      discountPercentage: 0,
-      discountAmount: 0,
-      sellingPrice: price,
-      taxAmount,
-      totalPrice: (price + taxAmount) * quantity,
-    };
-  }));
-}
+const storedProducts = parseInvoiceItems(orderData?.jsonOrderData) as any[];
+const products = await Promise.all((orderData?.items ?? []).map(async (item) => {
+  const stored = storedProducts.find((candidate) =>
+    Number(candidate?.productId) === Number(item.productId) ||
+    String(candidate?.name ?? "") === String(item.product?.name ?? "")
+  );
+  const quantity = Math.max(1, finiteNumber(item.quantity, 1));
+  const price = finiteNumber(item.price ?? item.product?.price);
+  const discountPercentage = finiteNumber(stored?.discountPercentage);
+  const discountAmount = finiteNumber(
+    stored?._discountAmount ?? stored?.discountAmount,
+    (price * discountPercentage) / 100
+  );
+  const sellingPrice = finiteNumber(stored?.sellingPrice, price - discountAmount);
+  const tax = item.product?.tax
+    ? await prisma.tax.findUnique({ where: { id: Number(item.product.tax) } })
+    : null;
+  const calculatedTax = (sellingPrice * finiteNumber(tax?.value)) / 100;
+  const taxAmount = finiteNumber(stored?.taxamt ?? stored?.taxAmount, calculatedTax);
+  return {
+    name: item.product?.name || stored?.name || "Item",
+    quantity,
+    price,
+    discountPercentage,
+    discountAmount,
+    sellingPrice,
+    taxAmount,
+    totalPrice: (sellingPrice + taxAmount) * quantity,
+  };
+}));
 const totals = calculateInvoiceTotals(products);
 
 // Outputting formatted strings for your invoice

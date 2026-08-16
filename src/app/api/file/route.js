@@ -46,6 +46,10 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const fileName = searchParams.get("file");
     const userId = searchParams.get("userId");
+    const legacyInvoice = fileName?.match(/^performa-invoice(\d+)\.pdf$/);
+    if (legacyInvoice) {
+      return NextResponse.redirect(new URL(`/api/invoice/${legacyInvoice[1]}/pdf`, request.url));
+    }
     // If ?file= is passed → return that file's absolute path
     if (fileName) {
       let files = getFiles(baseDir);

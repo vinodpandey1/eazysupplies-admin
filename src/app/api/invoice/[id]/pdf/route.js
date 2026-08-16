@@ -1,6 +1,9 @@
+import fs from "fs";
+import path from "path";
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { authenticate, handleHtmlFromOrder, verifyAdmin } from "../../utils/jwt";
+import { authenticate, verifyAdmin } from "../../../utils/jwt";
+import { generateInvoicePdf } from "../../../utils/pdfUtils";
 
 const prisma = new PrismaClient();
 
@@ -17,16 +20,17 @@ export async function GET(request, { params }) {
     }
     if (!order.approved) return NextResponse.json({ error: "Invoice is not ready" }, { status: 409 });
 
-    const { html } = await handleHtmlFromOrder(id);
-    return new NextResponse(html, {
+    const filePath = await generateInvoicePdf(id);
+    return new NextResponse(fs.readFileSync(filePath), {
       status: 200,
       headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "private, no-cache",
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="${path.basename(filePath)}"`,
+        "Cache-Control": "private, max-age=86400",
       },
     });
   } catch (error) {
-    console.error("Invoice view error:", error);
-    return NextResponse.json({ error: "Failed to render invoice" }, { status: 500 });
+    console.error("Invoice PDF error:", error);
+    return NextResponse.json({ error: "Failed to load invoice PDF" }, { status: 500 });
   }
 }

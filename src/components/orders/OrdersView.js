@@ -219,19 +219,8 @@ const OrdersView = ({ id }) => {
 
     const handleHtmlToPdf = async (id, popup = true) => {
         setIsLoading(true);
-        const res = await axios.get('/api/file/htmlToPdf?orderId=' + id, {
-        }, { withCredentials: true });
-        console.log('response', res);
-        if (res.status == 200) {
-            if (popup) {
-                alert(res.data?.message);
-                setIsLoading(false);
-                window.open(res?.data?.path, "_blank");
-            }
-        } else {
-            setIsLoading(false);
-        }
-
+        if (popup) window.open(`/api/invoice/${id}/pdf`, "_blank", "noopener,noreferrer");
+        setIsLoading(false);
     }
 
     const handlePayment = (id) => {
@@ -413,7 +402,7 @@ const OrdersView = ({ id }) => {
                                 {state.productItemDetails?.approved && state.productItemDetails?.status.toUpperCase() === "PAID" && <button type="button" onClick={() => handleShipping(state.productItemDetails?.id)} className="btn btn-info">Shipping</button>}
                                 {state.productItemDetails?.status.toUpperCase() === "APPROVED" && state.productItemDetails?.payment?.method == "OFF" && state.productItemDetails?.approved && <button type="button" onClick={() => handlePayment(state.productItemDetails?.payment?.id)} className="btn btn-info">Payment Offline</button>}
 
-                                {state.productItemDetails?.approved ? <span>Invoice : <a className="link-primary fw-semibold" href={`/api/invoice/${state.productItemDetails?.id}`} target="_blank">View</a> <a className="link-secondary fw-semibold" href={`/api/file?file=performa-invoice${state.productItemDetails?.id}.pdf`} target="_blank"> Pdf</a><button type="button" className="btn btn-success" disabled title="disabled" >Approved</button></span> : (state.productItemDetails?.status).toUpperCase() === "PENDING" ? <button type="button" className="btn btn-success" onClick={() => updateOrderStatus(state.productItemDetails?.id, "APPROVED")} disabled={isApprove} >
+                                {state.productItemDetails?.approved ? <span>Invoice : <a className="link-primary fw-semibold" href={`/api/invoice/${state.productItemDetails?.id}`} target="_blank">View</a> <a className="link-secondary fw-semibold" href={`/api/invoice/${state.productItemDetails?.id}/pdf`} target="_blank"> Pdf</a><button type="button" className="btn btn-success" disabled title="disabled" >Approved</button></span> : (state.productItemDetails?.status).toUpperCase() === "PENDING" ? <button type="button" className="btn btn-success" onClick={() => updateOrderStatus(state.productItemDetails?.id, "APPROVED")} disabled={isApprove} >
                                     {isApprove ? (
                                         <>
                                             <span
