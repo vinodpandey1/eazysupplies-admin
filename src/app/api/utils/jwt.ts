@@ -304,7 +304,8 @@ const INVOICE_TEMPLATE = `
             font-size: 20px;
             color: var(--brand-green);
         }
-        .footer { text-align: center; padding: 20px; font-size: 12px; color: var(--text-muted); }
+        .footer { text-align: center; padding: 12px 20px; font-size: 11px; line-height: 1.3; color: var(--text-muted); }
+        .footer p { margin: 3px 0; }
         @media screen and (max-width: 900px) {
             table { min-width: 860px; }
         }
@@ -316,7 +317,7 @@ const INVOICE_TEMPLATE = `
             table { min-width: 0; }
             thead { display: table-header-group; }
             tr { break-inside: avoid; page-break-inside: avoid; }
-            .header-top, .details-section, .summary-container { break-inside: avoid; page-break-inside: avoid; }
+            .header-top, .details-section, .summary-container, .footer { break-inside: avoid; page-break-inside: avoid; }
         }
     </style>
 </head>
