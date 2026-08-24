@@ -43,6 +43,7 @@ const BrandForm = ({ updateId, buttonName, model }) => {
       if (buttonName == "Update") {
         const res = await axios.put('/api/brands?brandId=' + updateId, {
           "name": values.name,
+          "image": values.image,
         }, { withCredentials: true });
 
         if (res.status == 200) {
@@ -54,7 +55,8 @@ const BrandForm = ({ updateId, buttonName, model }) => {
         let slugs = formatString(values.name);
         const res = await axios.post('/api/brands', {
           "name": values.name,
-          "slug" : slugs
+          "slug" : slugs,
+          "image": values.image,
           // "description": values.description,
         }, { withCredentials: true });
 
@@ -75,6 +77,7 @@ const BrandForm = ({ updateId, buttonName, model }) => {
         enableReinitialize
         initialValues={{
           name: Object.keys(data).length > 1 ? data?.name : "",
+          image: Object.keys(data).length > 1 ? data?.image || "" : "",
           // brand_image_id: updateId ? oldData?.data?.brand_image?.id || "" : "",
           // brand_image: updateId ? oldData?.data?.brand_image || "" : "",
           // brand_banner_id: updateId ? oldData?.data?.brand_banner?.id || "" : "",
@@ -96,6 +99,12 @@ const BrandForm = ({ updateId, buttonName, model }) => {
           <>
             <Form id="blog" className="theme-form theme-form-2 mega-form">
               <SimpleInputField nameList={[{ name: "name", placeholder: t("EnterName"), require: "true" }]} />
+              <SimpleInputField nameList={[{ name: "image", title: "Brand logo path", placeholder: "/assets/images/brands/brand-logo.png" }]} />
+              {values.image && (
+                <div className="mb-4 rounded border bg-white p-3" style={{ maxWidth: 320 }}>
+                  <img src={values.image} alt={`${values.name || "Brand"} logo preview`} style={{ width: "100%", height: 120, objectFit: "contain" }} />
+                </div>
+              )}
               {/* <FileUploadField paramsProps={{ mime_type: mediaConfig.image.join(",") }} name="brand_image_id" title="Image" id="brand_image_id" updateId={updateId} type="file" values={values} setFieldValue={setFieldValue} errors={errors} touched={touched} />
               <FileUploadField paramsProps={{ mime_type: mediaConfig.image.join(",") }} name="brand_banner_id" title="BannerImage" id="brand_banner_id" updateId={updateId} type="file" values={values} setFieldValue={setFieldValue} errors={errors} touched={touched} />
               <SimpleInputField

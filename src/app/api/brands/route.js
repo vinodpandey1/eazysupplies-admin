@@ -50,9 +50,15 @@ export async function PUT(request) {
   try {
     if (verifyAdmin(request)) {
       const body = await request.json();
-      const { id, ...rest } = body;
+      const { searchParams } = new URL(request.url);
+      const id = Number(body.id || searchParams.get("brandId"));
+      if (!id) {
+        return NextResponse.json({ error: "A valid brand id is required." }, { status: 400 });
+      }
+      const { id: _ignoredId, ...rest } = body;
       return NextResponse.json(await prisma.brand.update({ where: { id }, data: rest }));
     }
+    return NextResponse.json({ error: MESSAGES.UNAUTHORIZED }, { status: 401 });
   } catch (Error) {
 	  console.log(Error);
     return NextResponse.json(

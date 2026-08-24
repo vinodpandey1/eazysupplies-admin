@@ -147,6 +147,7 @@ model Brand {
   id       Int       @id @default(autoincrement())
   name     String    @unique
   slug     String?
+  image    String?
   products Product[]
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime?     @updatedAt @map("updated_at")

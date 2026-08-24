@@ -94,6 +94,7 @@ const ShowTableBrands = ({ current_page, per_page, mutate, isCheck, setIsCheck, 
           <tr>
             <>
               <th>SN</th>
+              <th>Logo</th>
               <th>Name</th>
               <th>Action</th>
             </>
@@ -115,6 +116,13 @@ const ShowTableBrands = ({ current_page, per_page, mutate, isCheck, setIsCheck, 
                 )} */}
                 <>
                   <td>{index + 1}</td>
+                  <td>
+                    <img
+                      src={tableData?.image || "/assets/images/placeholder/brand.png"}
+                      alt={`${tableData?.name || "Brand"} logo`}
+                      style={{ width: 88, height: 48, objectFit: "contain", background: "#fff", borderRadius: 6 }}
+                    />
+                  </td>
                   <td>{tableData?.name}</td>
                   <td className="d-flex justify-content-center">
                     <div className="d-flex gap-2">
