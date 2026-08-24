@@ -94,8 +94,7 @@ const ShowTableBrands = ({ current_page, per_page, mutate, isCheck, setIsCheck, 
           <tr>
             <>
               <th>SN</th>
-              <th>Logo</th>
-              <th>Name</th>
+              <th>Brand</th>
               <th>Action</th>
             </>
           </tr>
@@ -117,13 +116,17 @@ const ShowTableBrands = ({ current_page, per_page, mutate, isCheck, setIsCheck, 
                 <>
                   <td>{index + 1}</td>
                   <td>
-                    <img
-                      src={tableData?.image || "/assets/images/placeholder/brand.png"}
-                      alt={`${tableData?.name || "Brand"} logo`}
-                      style={{ width: 88, height: 48, objectFit: "contain", background: "#fff", borderRadius: 6 }}
-                    />
+                    <div className="d-flex align-items-center gap-3">
+                      <span className="d-inline-flex align-items-center justify-content-center rounded border bg-white" style={{ width: 56, height: 56, overflow: "hidden" }}>
+                        <img
+                          src={tableData?.image || "/assets/images/placeholder/brand.png"}
+                          alt={`${tableData?.name || "Brand"} logo`}
+                          style={{ width: 46, height: 46, objectFit: "contain" }}
+                        />
+                      </span>
+                      <strong className="fs-5">{tableData?.name}</strong>
+                    </div>
                   </td>
-                  <td>{tableData?.name}</td>
                   <td className="d-flex justify-content-center">
                     <div className="d-flex gap-2">
                       <button onClick={() => {
