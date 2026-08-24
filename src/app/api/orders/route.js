@@ -6,6 +6,8 @@ import { generateOrderSummaryHTML, generateApprovedOrderSummaryHTML, sendEmail, 
 import { createNotification } from "../utils/emailUtils";
 import { generateInvoicePdf } from "../utils/pdfUtils";
 import { convertDate, calcDate } from "../utils/dateUtils";
+import { hashSync } from "bcryptjs";
+import { randomUUID } from "crypto";
 
 const prisma = new PrismaClient();
 const recentRequests = new Map();
@@ -79,10 +81,7 @@ export async function GET(request) {
 // 📌 POST /api/orders
 export async function POST(request) {
   try {
-    const payload = await authenticate(request);
-    if (!payload?.userId) {
-      return NextResponse.json({ error: MESSAGES.UNAUTHORIZED }, { status: 401 });
-    }
+    const authenticatedPayload = await authenticate(request);
 
     const idempotencyKey = request.headers.get("idempotency-key");
     if (idempotencyKey && recentRequests.has(idempotencyKey)) {
@@ -90,7 +89,45 @@ export async function POST(request) {
     }
 
     const body = await request.json();
-    const { shipping, payment, jsonData } = body;
+    const { shipping, payment, jsonData, guest } = body;
+    let payload = authenticatedPayload;
+
+    if (!payload?.userId) {
+      const guestName = String(guest?.name || "").trim();
+      const guestEmail = String(guest?.email || "").trim().toLowerCase();
+      const guestPhone = String(guest?.phone || "").replace(/\D/g, "");
+      const guestCountryCode = String(guest?.countryCode || "91").replace(/\D/g, "") || "91";
+      if (!guestName || !/^\S+@\S+\.\S+$/.test(guestEmail) || !/^[6-9]\d{9}$/.test(guestPhone)) {
+        return NextResponse.json({ error: "Please provide a valid guest name, email and 10-digit phone number." }, { status: 400 });
+      }
+
+      const [emailUser, phoneUser] = await Promise.all([
+        prisma.user.findUnique({ where: { email: guestEmail } }),
+        prisma.user.findUnique({ where: { phone: guestPhone } }),
+      ]);
+      if (emailUser && phoneUser && emailUser.id !== phoneUser.id) {
+        return NextResponse.json({ error: "The email and phone number belong to different accounts. Please log in or use different details." }, { status: 409 });
+      }
+
+      let guestUser = emailUser || phoneUser;
+      if (!guestUser) {
+        const role = (await prisma.role.findUnique({ where: { name: "customer" } })) ||
+          (await prisma.role.create({ data: { name: "customer" } }));
+        guestUser = await prisma.user.create({
+          data: {
+            name: guestName,
+            email: guestEmail,
+            phone: guestPhone,
+            countryCode: guestCountryCode,
+            gstn: `GUEST-${randomUUID()}`,
+            password: hashSync(randomUUID(), 10),
+            status: true,
+            roleId: role.id,
+          },
+        });
+      }
+      payload = { userId: guestUser.id, name: guestUser.name, email: guestUser.email };
+    }
     const requestedItems = Array.isArray(body.items) ? body.items : [];
     if (!requestedItems.length) {
       return NextResponse.json({ error: "Your cart is empty." }, { status: 400 });
