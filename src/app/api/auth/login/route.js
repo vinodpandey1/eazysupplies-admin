@@ -13,7 +13,7 @@ const MESSAGES = {
   REQUIRED_FIELDS: "Email | gstn | phone and password are required",
   USER_NOT_FOUND: "User does not exist",
   USER_INACTIVE: "User is not active",
-  USER_INACTIVE: "User is deleted",
+  USER_DELETED: "User is deleted",
   INVALID_PASSWORD: "Incorrect password",
   MISSING_CRED:"Password or OTP Required",
   INVALID_OTP: "Incorrect OTP",
@@ -32,7 +32,10 @@ const MESSAGES = {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { email, password, gstn, phone, otp } = body;
+    const { password, gstn, phone, otp } = body;
+    const email = typeof body.email === "string"
+      ? body.email.trim().toLowerCase()
+      : body.email;
     let flag = false;
     // Validate input
     if ((!password && !otp) || (!email && !phone && !gstn)) {
@@ -56,14 +59,24 @@ if (!user) {
       return NextResponse.json({ error: MESSAGES.USER_NOT_FOUND }, { status: 401 });
     }
 
-    // Check user status
-    if (!user.status) {
-      return NextResponse.json({ error: MESSAGES.USER_INACTIVE }, { status: 401 });
+    if (user.deleted) {
+      return NextResponse.json(
+        { error: MESSAGES.USER_DELETED, code: "ACCOUNT_DELETED" },
+        { status: 401 }
+      );
     }
 
-    // Check user status
-    if (user.deleted) {
-      return NextResponse.json({ error: MESSAGES.USER_DELETED }, { status: 401 });
+    // A newly registered user remains inactive until the email link validates
+    // the stored OTP. Expose a stable state for the storefront to explain why.
+    if (!user.status) {
+      return NextResponse.json(
+        {
+          error: MESSAGES.USER_INACTIVE,
+          code: "ACCOUNT_INACTIVE",
+          activationRequired: true,
+        },
+        { status: 401 }
+      );
     }
 
     if(!password && !otp)
@@ -126,7 +139,7 @@ export async function GET(request) {
     //Requires email as query param: /api/user?action=forgotPassword&email=test@example.com
     let random = 123456;
     if (action === "forgotPassword") {
-      const email = searchParams.get("email");
+      const email = searchParams.get("email")?.trim().toLowerCase();
       if (!email) {
         return NextResponse.json({ error: "Email is required" }, { status: 400 });
       }
@@ -168,7 +181,7 @@ export async function GET(request) {
     }
     //Requires userId as query param: /api/user?action=activateUser&email=test@test.com&otp=134d
     if (action === "activateUser") {
-      const email = searchParams.get("email");
+      const email = searchParams.get("email")?.trim().toLowerCase();
       if (!email) {
         return NextResponse.json({ error: "Email is required" }, { status: 400 });
       }
@@ -351,7 +364,13 @@ export async function GET(request) {
           },
       })
       }
-      return NextResponse.json({ message: MESSAGES.USER_ACTIVATION_FAILED }, { status: 500 });
+      return NextResponse.json(
+        {
+          error: MESSAGES.USER_ACTIVATION_FAILED,
+          code: "INVALID_ACTIVATION_LINK",
+        },
+        { status: 400 }
+      );
     }
     if (action === "makeAdmin") {
       const email = searchParams.get("email");

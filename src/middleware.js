@@ -48,7 +48,7 @@ export async function middleware(request) {
     );
     response.headers.set(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization"
+      "Content-Type, Authorization, Idempotency-Key"
     );
     response.headers.set("Access-Control-Allow-Credentials", "true");
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { parseAuthCookie, verifyJwt } from "../../utils/jwt";
-import { sendEmail, sendWhatsApp, createNotification, sendWhatsAppUserReg } from "../../utils/emailUtils";
+import { sendEmail, createNotification, sendWhatsAppUserReg } from "../../utils/emailUtils";
 import { hashSync } from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 
@@ -91,10 +91,19 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
+  let createdUser = null;
+
   try {
     const body = await request.json();
-    let { name, email, phone, countryCode, gstn, password } = body;
-    countryCode = countryCode ? countryCode : "91";
+    let { name, email, phone, countryCode, country_code, gstn, password } = body;
+    name = typeof name === "string" ? name.trim() : name;
+    email = typeof email === "string" ? email.trim().toLowerCase() : email;
+    phone = typeof phone === "string" ? phone.replace(/\D/g, "") : phone;
+    gstn = typeof gstn === "string" ? gstn.trim().toUpperCase() : gstn;
+    countryCode = String(countryCode || country_code || "91").replace(/\D/g, "") || "91";
+    if (typeof phone === "string" && phone.length > 10 && phone.startsWith(countryCode)) {
+      phone = phone.slice(countryCode.length);
+    }
 
     // Validate required fields
     if (!name || !email || !phone || !gstn || !password || !countryCode) {
@@ -132,9 +141,11 @@ export async function POST(request) {
     }
 
     // Ensure role exists
-    const role =
-      (await prisma.role.findUnique({ where: { name: "customer" } })) ||
-      (await prisma.role.create({ data: { name: "customer" } }));
+    const role = await prisma.role.upsert({
+      where: { name: "customer" },
+      update: {},
+      create: { name: "customer" },
+    });
 
     // Hash password
     const hashedPassword = hashSync(password, 10);
@@ -154,34 +165,80 @@ export async function POST(request) {
         roleId: role.id,
       },
     });
-    let category = await prisma.category.findFirst({ where: { name: "DEFAULT" } });
-    let addOffer = await prisma.offers.create({
-      data : {
-        "name": "WELCOME-OFFERS-"+newUser?.name,
-      "discount": 0,
-      "userId": newUser?.id.toString(),
-      "tag": "",
-      "categoryId": category?.id.toString(),
-      "remarks": "DEFAULT"
-      }
-    });
-    if (newUser) {
-      const emailsub = "Welcome easysupply.com";
-      let userName = newUser.name;
-      let userEmail = newUser.email;
-      let htmlmsg = MESSAGES.USER_WELCOME_htmlMessage;
-      let plainmsg = MESSAGES.USER_WELCOME_plainTextMessage;
-      htmlmsg = htmlmsg.replaceAll("$userName", userName).replaceAll("$userEmail", userEmail).replaceAll("$otp", otp).replaceAll("$platformUrl", process.env.PLATFORM_URL).replaceAll("$brandName", process.env.BRAND_NAME);
-      plainmsg = plainmsg.replaceAll("$userName", userName).replaceAll("$userEmail", userEmail).replaceAll("$otp", otp).replaceAll("$platformUrl", process.env.PLATFORM_URL).replaceAll("$brandName", process.env.BRAND_NAME);
-      await sendEmail(newUser.email, emailsub, htmlmsg);
-      await sendWhatsAppUserReg(userName, newUser.countryCode + newUser.phone, userEmail, newUser.gstn, newUser.otp);
-      sendWhatsApp(newUser.countryCode + newUser.phone, "text", plainmsg);
-      createNotification(emailsub, newUser.id.toString(), plainmsg);
-    }
+    createdUser = newUser;
+
+    const emailsub = "Welcome easysupply.com";
+    const userName = newUser.name;
+    const userEmail = newUser.email;
+    const platformUrl = process.env.PLATFORM_URL || "https://eazysupplies.com";
+    const brandName = process.env.BRAND_NAME || "easysupplies.com";
+    const replacements = [
+      ["$userName", userName],
+      ["$userEmail", userEmail],
+      ["$otp", String(otp)],
+      ["$platformUrl", platformUrl],
+      ["$brandName", brandName],
+    ];
+    const renderMessage = (template) =>
+      replacements.reduce(
+        (message, [placeholder, value]) => message.replaceAll(placeholder, value),
+        template
+      );
+    const htmlmsg = renderMessage(MESSAGES.USER_WELCOME_htmlMessage);
+    const plainmsg = renderMessage(MESSAGES.USER_WELCOME_plainTextMessage);
+
+    // Account creation is the primary operation. Delivery and welcome-offer
+    // failures are reported truthfully but must never turn a created account
+    // into a 500 response (which led users to retry and see duplicate errors).
+    const [emailResult, whatsappResult, notificationResult, offerResult] =
+      await Promise.allSettled([
+        sendEmail(newUser.email, emailsub, htmlmsg),
+        sendWhatsAppUserReg(
+          userName,
+          newUser.countryCode + newUser.phone,
+          userEmail,
+          newUser.gstn,
+          newUser.otp
+        ),
+        createNotification(emailsub, newUser.id.toString(), plainmsg),
+        (async () => {
+          const category = await prisma.category.findFirst({
+            where: { name: "DEFAULT" },
+          });
+          if (!category) return false;
+          await prisma.offers.create({
+            data: {
+              name: "WELCOME-OFFERS-" + newUser.name,
+              discount: 0,
+              userId: newUser.id.toString(),
+              tag: "",
+              categoryId: category.id.toString(),
+              remarks: "DEFAULT",
+            },
+          });
+          return true;
+        })(),
+      ]);
+
+    const delivered = (result) =>
+      result.status === "fulfilled" && result.value === true;
+    const completed = (result) => result.status === "fulfilled";
 
     return NextResponse.json(
       {
-        message: MESSAGES.USER_CREATED,
+        message: delivered(emailResult)
+          ? `${MESSAGES.USER_CREATED}. Please use the activation link sent to your email before logging in.`
+          : `${MESSAGES.USER_CREATED}, but the activation email could not be delivered. Please contact support to resend it.`,
+        activationRequired: true,
+        accountStatus: "inactive_pending_activation",
+        delivery: {
+          email: delivered(emailResult) ? "sent" : "failed",
+          whatsapp: delivered(whatsappResult) ? "sent" : "failed",
+          notification: completed(notificationResult) ? "created" : "failed",
+        },
+        welcomeOffer: completed(offerResult) && offerResult.value === true
+          ? "created"
+          : "not_created",
         user: {
           email: newUser.email,
           phone: newUser.phone,
@@ -192,6 +249,38 @@ export async function POST(request) {
     );
   } catch (error) {
     console.error("[USER_POST_ERROR]", error);
+
+    // Unique constraints can still race after the preflight checks. Return a
+    // deterministic conflict instead of an opaque server error.
+    if (error?.code === "P2002") {
+      return NextResponse.json(
+        {
+          error: "Account details already registered",
+          message: "An account already exists with this email address, GST number or phone number. Please log in or use different details.",
+        },
+        { status: 409 }
+      );
+    }
+
+    // Defensive guarantee: once the account exists, optional post-create work
+    // must not cause the client to retry registration.
+    if (createdUser) {
+      return NextResponse.json(
+        {
+          message: `${MESSAGES.USER_CREATED}, but activation delivery status could not be confirmed. Please contact support to resend it.`,
+          activationRequired: true,
+          accountStatus: "inactive_pending_activation",
+          delivery: { email: "unknown", whatsapp: "unknown", notification: "unknown" },
+          user: {
+            email: createdUser.email,
+            phone: createdUser.phone,
+            gstn: createdUser.gstn,
+          },
+        },
+        { status: 201 }
+      );
+    }
+
     return NextResponse.json(
       { error: MESSAGES.SERVER_ERROR },
       { status: 500 }

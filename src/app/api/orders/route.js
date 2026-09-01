@@ -7,10 +7,18 @@ import { createNotification } from "../utils/emailUtils";
 import { generateInvoicePdf } from "../utils/pdfUtils";
 import { convertDate, calcDate } from "../utils/dateUtils";
 import { hashSync } from "bcryptjs";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 
 const prisma = new PrismaClient();
-const recentRequests = new Map();
+const NO_STORE_HEADERS = {
+  "Cache-Control": "private, no-store, max-age=0, must-revalidate",
+};
+const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const csvHasId = (value, id) => String(value || "")
+  .split(",")
+  .map((entry) => entry.trim())
+  .filter(Boolean)
+  .includes(String(id));
 const safeUserSelect = {
   id: true,
   name: true,
@@ -19,6 +27,26 @@ const safeUserSelect = {
   countryCode: true,
   gstn: true,
   status: true,
+};
+const orderInclude = {
+  user: { select: safeUserSelect },
+  items: { include: { product: true } },
+  shipping: true,
+  payment: true,
+};
+const hashRequest = (body) => createHash("sha256")
+  .update(JSON.stringify(body || {}))
+  .digest("hex");
+const normalizedIdempotencyKey = (value) => {
+  const key = String(value || "").trim();
+  return key && key.length <= 191 ? key : null;
+};
+const findReplayOrder = async (record) => {
+  if (!record?.orderId) return null;
+  return prisma.order.findUnique({
+    where: { id: Number(record.orderId) },
+    include: orderInclude,
+  });
 };
 // 📌 GET /api/orders?page=1&limit=10&sortBy=createdAt&order=desc&status=PENDING
 export async function GET(request) {
@@ -61,17 +89,20 @@ export async function GET(request) {
       prisma.order.count({ where }),
     ]);
 
-    return NextResponse.json({
-      page,
-      current_page: page,
-      limit,
-      per_page: limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-      last_page: Math.ceil(total / limit),
-      orders,
-      data: orders,
-    });
+    return NextResponse.json(
+      {
+        page,
+        current_page: page,
+        limit,
+        per_page: limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        last_page: Math.ceil(total / limit),
+        orders,
+        data: orders,
+      },
+      { headers: NO_STORE_HEADERS }
+    );
   } catch (error) {
     console.error("GET /orders error:", error);
     return NextResponse.json({ error: "Failed to fetch orders" }, { status: 500 });
@@ -82,12 +113,6 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     const authenticatedPayload = await authenticate(request);
-
-    const idempotencyKey = request.headers.get("idempotency-key");
-    if (idempotencyKey && recentRequests.has(idempotencyKey)) {
-      return NextResponse.json(recentRequests.get(idempotencyKey), { status: 200 });
-    }
-
     const body = await request.json();
     const { shipping, payment, jsonData, guest } = body;
     let payload = authenticatedPayload;
@@ -111,22 +136,84 @@ export async function POST(request) {
 
       let guestUser = emailUser || phoneUser;
       if (!guestUser) {
-        const role = (await prisma.role.findUnique({ where: { name: "customer" } })) ||
-          (await prisma.role.create({ data: { name: "customer" } }));
-        guestUser = await prisma.user.create({
-          data: {
-            name: guestName,
-            email: guestEmail,
-            phone: guestPhone,
-            countryCode: guestCountryCode,
-            gstn: `GUEST-${randomUUID()}`,
-            password: hashSync(randomUUID(), 10),
-            status: true,
-            roleId: role.id,
-          },
+        const role = await prisma.role.upsert({
+          where: { name: "customer" },
+          update: {},
+          create: { name: "customer" },
         });
+        try {
+          guestUser = await prisma.user.create({
+            data: {
+              name: guestName,
+              email: guestEmail,
+              phone: guestPhone,
+              countryCode: guestCountryCode,
+              gstn: `GUEST-${randomUUID()}`,
+              password: hashSync(randomUUID(), 10),
+              status: true,
+              roleId: role.id,
+            },
+          });
+        } catch (guestCreateError) {
+          if (guestCreateError?.code !== "P2002") throw guestCreateError;
+
+          // A simultaneous first checkout can create the same guest while this
+          // request is waiting on the unique email/phone indexes. Resolve the
+          // committed user and continue instead of returning an opaque 500.
+          const [racedEmailUser, racedPhoneUser] = await Promise.all([
+            prisma.user.findUnique({ where: { email: guestEmail } }),
+            prisma.user.findUnique({ where: { phone: guestPhone } }),
+          ]);
+          if (
+            racedEmailUser &&
+            racedPhoneUser &&
+            racedEmailUser.id !== racedPhoneUser.id
+          ) {
+            return NextResponse.json(
+              { error: "The email and phone number belong to different accounts. Please log in or use different details." },
+              { status: 409, headers: NO_STORE_HEADERS }
+            );
+          }
+          guestUser = racedEmailUser || racedPhoneUser;
+          if (!guestUser) throw guestCreateError;
+        }
       }
       payload = { userId: guestUser.id, name: guestUser.name, email: guestUser.email };
+    }
+
+    const requestHash = hashRequest(body);
+    const suppliedKey = normalizedIdempotencyKey(
+      request.headers.get("idempotency-key")
+    );
+    // Legacy/mobile callers may not yet send the header. A short time-bucketed
+    // deterministic key still protects the common double-tap/retry path while
+    // preserving the ability to intentionally repeat an identical order later.
+    const automaticKey = `auto:${payload.userId}:${Math.floor(Date.now() / 120000)}:${requestHash}`;
+    const idempotencyKey = suppliedKey || automaticKey;
+    const existingRequest = await prisma.orderIdempotency.findUnique({
+      where: { key: idempotencyKey },
+    });
+    if (existingRequest) {
+      if (
+        existingRequest.requestHash !== requestHash ||
+        Number(existingRequest.userId) !== Number(payload.userId)
+      ) {
+        return NextResponse.json(
+          { error: "This checkout request key was already used for different order details." },
+          { status: 409, headers: NO_STORE_HEADERS }
+        );
+      }
+      const replayOrder = await findReplayOrder(existingRequest);
+      if (replayOrder) {
+        return NextResponse.json(replayOrder, {
+          status: 200,
+          headers: { ...NO_STORE_HEADERS, "Idempotent-Replayed": "true" },
+        });
+      }
+      return NextResponse.json(
+        { error: "This order request is already being processed. Please wait before retrying." },
+        { status: 409, headers: { ...NO_STORE_HEADERS, "Retry-After": "2" } }
+      );
     }
     const requestedItems = Array.isArray(body.items) ? body.items : [];
     if (!requestedItems.length) {
@@ -138,7 +225,17 @@ export async function POST(request) {
     }
     const productIds = [...new Set(requestedItems.map((item) => Number(item.productId)))];
 
-    const order = await prisma.$transaction(async (tx) => {
+    let order;
+    try {
+      order = await prisma.$transaction(async (tx) => {
+      await tx.orderIdempotency.create({
+        data: {
+          key: idempotencyKey,
+          requestHash,
+          userId: Number(payload.userId),
+          status: "PROCESSING",
+        },
+      });
       const products = await tx.product.findMany({ where: { id: { in: productIds }, status: true } });
       const productsById = new Map(products.map((product) => [product.id, product]));
       const items = requestedItems.map((item) => {
@@ -146,6 +243,16 @@ export async function POST(request) {
         const quantity = Number(item.quantity);
         if (!product || !Number.isInteger(quantity) || quantity < 1) throw new Error("INVALID_ITEM");
         if (quantity > product.stock) throw new Error(`OUT_OF_STOCK:${product.name}:${product.stock}`);
+        const displayedUnitPrice = Number(item.price);
+        if (
+          Number.isFinite(displayedUnitPrice) &&
+          Math.abs(displayedUnitPrice - Number(product.price)) > 0.009
+        ) {
+          const pricingError = new Error("PRICE_CHANGED");
+          pricingError.productName = product.name;
+          pricingError.currentPrice = Number(product.price);
+          throw pricingError;
+        }
         return {
           productId: product.id,
           quantity,
@@ -169,12 +276,7 @@ export async function POST(request) {
             },
           } : undefined,
         },
-        include: {
-          user: { select: safeUserSelect },
-          items: { include: { product: true } },
-          shipping: true,
-          payment: true,
-        },
+        include: orderInclude,
       });
 
       for (const item of items) {
@@ -186,8 +288,35 @@ export async function POST(request) {
           throw new Error(`OUT_OF_STOCK:${productsById.get(item.productId)?.name || "Product"}:0`);
         }
       }
+      await tx.orderIdempotency.update({
+        where: { key: idempotencyKey },
+        data: { orderId: createdOrder.id, status: "COMPLETED" },
+      });
       return createdOrder;
-    });
+      });
+    } catch (transactionError) {
+      // A concurrent request can win the unique-key reservation while this
+      // transaction is waiting. Replay its committed order instead of creating
+      // another one or returning an opaque error.
+      if (transactionError?.code === "P2002") {
+        const racedRequest = await prisma.orderIdempotency.findUnique({
+          where: { key: idempotencyKey },
+        });
+        if (
+          racedRequest?.requestHash === requestHash &&
+          Number(racedRequest?.userId) === Number(payload.userId)
+        ) {
+          const replayOrder = await findReplayOrder(racedRequest);
+          if (replayOrder) {
+            return NextResponse.json(replayOrder, {
+              status: 200,
+              headers: { ...NO_STORE_HEADERS, "Idempotent-Replayed": "true" },
+            });
+          }
+        }
+      }
+      throw transactionError;
+    }
 
     const itemsText = order.items
       .map((item) => {
@@ -197,14 +326,17 @@ export async function POST(request) {
       .join('\n');
 
     const orderhtml = generateOrderSummaryHTML(order, payload.name);
-    await sendEmail(payload.email, "Order Created with " + order.id, orderhtml);
-    await sendWhatsAppOrderCreate(order?.user?.name, order?.user?.countryCode + order?.user?.phone, order.id, "Status : Created", itemsText);
-    await createNotification("Order Created with " + order.id, payload.userId.toString(), orderhtml);
-    if (idempotencyKey) {
-      recentRequests.set(idempotencyKey, order);
-      setTimeout(() => recentRequests.delete(idempotencyKey), 5 * 60 * 1000);
-    }
-    return NextResponse.json(order, { status: 201 });
+    const deliveryResults = await Promise.allSettled([
+      sendEmail(payload.email, "Order Created with " + order.id, orderhtml),
+      sendWhatsAppOrderCreate(order?.user?.name, order?.user?.countryCode + order?.user?.phone, order.id, "Status : Created", itemsText),
+      createNotification("Order Created with " + order.id, payload.userId.toString(), orderhtml),
+    ]);
+    deliveryResults.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(`Order ${order.id} post-order delivery ${index + 1} failed:`, result.reason);
+      }
+    });
+    return NextResponse.json(order, { status: 201, headers: NO_STORE_HEADERS });
   } catch (error) {
     if (error?.message?.startsWith("OUT_OF_STOCK:")) {
       const [, name, stock] = error.message.split(":");
@@ -212,6 +344,14 @@ export async function POST(request) {
     }
     if (error?.message === "INVALID_ITEM") {
       return NextResponse.json({ error: "One or more cart items are invalid." }, { status: 400 });
+    }
+    if (error?.message === "PRICE_CHANGED") {
+      return NextResponse.json(
+        {
+          error: `${error.productName || "A product"} has a new price of ₹${roundMoney(error.currentPrice || 0).toFixed(2)}. Please refresh your cart and review the updated total.`,
+        },
+        { status: 409, headers: NO_STORE_HEADERS }
+      );
     }
     console.error("POST /orders error:", error);
     return NextResponse.json({ error: "Unable to place the order. Please try again." }, { status: 500 });
@@ -227,10 +367,9 @@ export async function PUT(request) {
     }
     if (await verifyAdmin(request)) {
       if (approved) {
-        let filterProduct, offer, jsonData = [], jsonFound = false;
-        let orders = await prisma.order.findUnique({
+        const orders = await prisma.order.findUnique({
           where: {
-            id: id,
+            id: Number(id),
           },
           include: {
             user: true,
@@ -246,141 +385,105 @@ export async function PUT(request) {
         if (!orders) {
           return NextResponse.json({ error: "Order not found" }, { status: 404 });
         }
- //       await generateTaxDiscount(orders);
-        const Products = await prisma.product.findMany();
-        let _jsonData = [];
-        for (const el of orders.items) {
-          const offer = await prisma.offers.findMany({
-            where: {
-              userId: { contains: orders?.user?.id?.toString() },
-              categoryId: { contains: el.product?.categoryId?.toString() }
-            }
-          });
-
-          const filterProduct = Products.filter(
-            (p) => Number(el.product?.id) === p.id
+        const [offers, taxes] = await Promise.all([
+          prisma.offers.findMany({
+            orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+          }),
+          prisma.tax.findMany(),
+        ]);
+        const taxById = new Map(taxes.map((tax) => [Number(tax.id), Number(tax.value || 0)]));
+        const orderSnapshots = orders.items.map((item) => {
+          const applicableOffer = offers.find((offer) =>
+            csvHasId(offer.userId, orders.userId) &&
+            csvHasId(offer.categoryId, item.product?.categoryId)
           );
+          const unitPrice = Math.max(Number(item.price || 0), 0);
+          const quantity = Math.max(Number(item.quantity || 0), 0);
+          const discountPercentage = Math.min(Math.max(Number(applicableOffer?.discount || 0), 0), 100);
+          const discountAmount = roundMoney(unitPrice * discountPercentage / 100);
+          const sellingPrice = roundMoney(unitPrice - discountAmount);
+          const taxPercentage = Number(taxById.get(Number(item.product?.tax)) || 0);
+          const taxAmount = roundMoney(sellingPrice * taxPercentage / 100);
 
-          if (filterProduct.length === 0) continue;
-          let product = filterProduct[0];
-          let price = Number(product.price);
-          let discount = Number(offer[0]?.discount || 0);
-
-          // always start with an array
-          let jsonData = Array.isArray(product.jsonData)
-            ? [...product.jsonData]
-            : [];
-
-          // try to find existing entry
-          let found = false;
-
-          jsonData = jsonData.map((entry) => {
-            if (
-              entry.orderId === orders.id &&
-              entry.userId === orders.user?.id &&
-              entry.categoryId === el.product?.categoryId
-            ) {
-              found = true;
-              const discountAmount = (price * discount) / 100;
-              return {
-                ...entry,
-                discountPercentage: discount,
-                discountAmount,
-                sellingPrice: price - discountAmount
-              };
-            }
-            return entry;
-          });
-
-          // if not found, add a new one
-          if (!found) {
-            const discountAmount = (price * discount) / 100;
-            jsonData.push({
-              orderId: orders.id,
-              userId: orders.user?.id,
-              categoryId: el.product?.categoryId,
-              discountPercentage: discount,
-              discountAmount,
-              sellingPrice: price - discountAmount
-            });
-          }
-          const _discountAmount = (price * discount) / 100;
-          let tax = el.product?.tax ? await prisma.tax.findUnique({
-            where: { id: Number(el.product.tax) },
-          }) : null;
-          const taxPercent = Number(tax?.value || 0);
-          let taxamt = taxPercent > 0 ? ((price - _discountAmount) * taxPercent) / 100 : 0;
-          
-    //     console.log(el.quantity);
-    //     console.log(el.price);
-          const _itemjsonData = {
-            productId : el.product?.id,
-            name : el.product?.name,
-            quantity : el.quantity,
-            price : Number(el.price),
-            discountPercentage: discount,
-            discountAmount: _discountAmount,
-            sellingPrice: price - _discountAmount,
-            taxPercentage: taxPercent,
-            taxAmount: taxamt,
-            totalPrice: ((price - _discountAmount) + taxamt) * Number(el.quantity)
+          return {
+            productId: item.productId,
+            name: item.product?.name || "Product",
+            quantity,
+            price: unitPrice,
+            discountPercentage,
+            discountAmount,
+            sellingPrice,
+            taxPercentage,
+            taxAmount,
+            totalPrice: roundMoney((sellingPrice + taxAmount) * quantity),
           };
-          _jsonData.push(_itemjsonData);
-          await prisma.product.update({
-            where: { id: product.id },
-            data: { jsonData }
-          });
-        }
-
-        let result = await prisma.order.update({
-           where: { id },
-           data: 
-          { 
-            status, 
-            approved,
-            jsonOrderData : _jsonData
-           }
-         });
-         
-        const notification = await prisma.notification.create({
-          data: {
-            name: 'Order ' + id + ' approved',
-            type: "notification",
-            remarks: "Order Number " + id + " approved by Admin, Please proceed for payment",
-            recepient: orders?.userId.toString()
-          }
         });
-        //return NextResponse.json(result);
-        // return NextResponse.json({ offer, Products, filterProduct });
+        const snapshotGrandTotal = roundMoney(
+          orderSnapshots.reduce(
+            (total, item) => total + Number(item.totalPrice || 0),
+            0
+          )
+        );
+
         const itemsTextapproved = orders.items
-          .map((item) => {
-            return `${item.product.name} X ${item.quantity}`;
-          })
+          .map((item) => `${item.product.name} X ${item.quantity}`)
           .join('\n');
-          const cdt = await convertDate(orders.createdAt) ; 
-          const ddt = await calcDate(orders.createdAt,7) ; 
-          console.log(result.jsonOrderData);
-          let data = {
-              company: { name: "Earthling Consumer Products Pvt. Ltd.", address: "52/39, LGF, Ramjas Road, Karol Bagh, New Delhi 1100053", email : "contact@earthlingco.in" },
-              customer: { 
-                name: orders.user.name, 
-                phone: orders.user.phone, 
-                address: orders.shipping.address 
-              },
-              orderDate : cdt,
-              dueDate : ddt,
-              items: result.jsonOrderData,
-              bankDetails: {
-                bankName: "HDFC Bank",
-                accountNo: "987654321",
-                ifc: "GLB001"
-              }
-            };
+        const cdt = await convertDate(orders.createdAt);
+        const ddt = await calcDate(orders.createdAt, 7);
+        const invoiceData = {
+          company: {
+            name: "Earthling Consumer Products Pvt. Ltd.",
+            address: "52/39, LGF, Ramjas Road, Karol Bagh, New Delhi 1100053",
+            email: "contact@earthlingco.in",
+          },
+          customer: {
+            name: orders.user.name,
+            phone: orders.user.phone,
+            address: orders.shipping?.address || "",
+          },
+          orderDate: cdt,
+          dueDate: ddt,
+          items: orderSnapshots,
+          bankDetails: {
+            bankName: "HDFC Bank",
+            accountNo: "987654321",
+            ifc: "GLB001",
+          },
+        };
+
+        // Build and persist the invoice before exposing the approved state.
+        // If PDF generation fails, the order remains pending and no broken
+        // invoice link can become visible to either the customer or admin.
+        await generateInvoicePdf(orders.id, invoiceData);
+
+        const [result] = await prisma.$transaction([
+          prisma.order.update({
+            where: { id: Number(id) },
+            data: {
+              status,
+              approved: true,
+              jsonOrderData: orderSnapshots,
+            },
+          }),
+          prisma.notification.create({
+            data: {
+              name: 'Order ' + id + ' approved',
+              type: "notification",
+              remarks: "Order Number " + id + " approved by Admin, Please proceed for payment",
+              recepient: orders.userId.toString(),
+            },
+          }),
+          // Payment rows are created with the pre-approval subtotal. Keep the
+          // persisted amount aligned with the immutable approved snapshot so
+          // admin, storefront and the gateway all display/validate one total.
+          prisma.payment.updateMany({
+            where: { orderId: Number(id) },
+            data: { amount: snapshotGrandTotal },
+          }),
+        ]);
         const orderhtml = generateApprovedOrderSummaryHTML(orders, Number(orders.userId), orders?.user?.name);
         void Promise.allSettled([
-          generateInvoicePdf(orders.id, data),
           sendEmail(orders?.user?.email, "Order Approved with " + result.id, orderhtml),
-          createNotification("Order Approved with " + orders.id, orders?.userId?.toString(), orderhtml),
           sendWhatsAppOrderCreate(orders?.user?.name, orders?.user?.countryCode + orders?.user?.phone, orders.id, "Status : Approved", itemsTextapproved),
         ]).then((sideEffects) => {
           sideEffects.forEach((effect) => effect.status === "rejected" && console.error("Order approval side effect failed", effect.reason));
@@ -388,11 +491,11 @@ export async function PUT(request) {
 
         return NextResponse.json({ message: "Order approved", order: result });
       } else if (status == "REJECTED") {
-        const order = await prisma.order.findUnique({ where: { id: id } });
+        const order = await prisma.order.findUnique({ where: { id: Number(id) } });
         if (!order) {
           return NextResponse.json({ msg: "Order details not found!" }, { status: 404 });
         }
-        let update = await prisma.order.update({ where: { id: id }, data:{ status : status} });
+        await prisma.order.update({ where: { id: Number(id) }, data:{ status : status} });
         return NextResponse.json({msg: "Rejected"}, { status: 200 });
       } else {
        return NextResponse.json({ error: "Unsupported order status update" }, { status: 400 });

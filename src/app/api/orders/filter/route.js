@@ -4,6 +4,9 @@ import { authenticate, verifyAdmin } from "../../utils/jwt";
 import { MESSAGES } from "../../utils/statusConstant";
 
 const prisma = new PrismaClient();
+const NO_STORE_HEADERS = {
+    "Cache-Control": "private, no-store, max-age=0, must-revalidate",
+};
 const safeUserSelect = {
     id: true,
     name: true,
@@ -49,7 +52,10 @@ export async function GET(request) {
             }
             const tax = await prisma.tax.findMany();
             const deliveryAgent = isAdmin ? await prisma.deliveryAgent.findMany() : [];
-            return NextResponse.json({ data: orders, tax, deliveryAgent }, { status: 200 });
+            return NextResponse.json(
+                { data: orders, tax, deliveryAgent },
+                { status: 200, headers: NO_STORE_HEADERS }
+            );
         }
 
         let requestedUserId = authenticatedUserId;
@@ -90,7 +96,10 @@ export async function GET(request) {
         });
         const tax = await prisma.tax.findMany();
         const deliveryAgent = isAdmin ? await prisma.deliveryAgent.findMany() : [];
-        return NextResponse.json({ data: orders, tax, deliveryAgent }, { status: 200 });
+        return NextResponse.json(
+            { data: orders, tax, deliveryAgent },
+            { status: 200, headers: NO_STORE_HEADERS }
+        );
     } catch (err) {
         console.error("GET /orders/filter error:", err);
         return NextResponse.json({ error: MESSAGES.SERVER_ERROR }, { status: 500 });

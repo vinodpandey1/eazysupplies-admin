@@ -2,6 +2,12 @@ import { Order, PrismaClient } from '@prisma/client';
 import Mailjet from 'node-mailjet';
 import axios from 'axios';
 const prisma = new PrismaClient();
+const logDeliveryError = (channel: string, error: any) => {
+  console.error(`[${channel}_DELIVERY_ERROR]`, {
+    message: error?.message || "Delivery request failed",
+    status: error?.response?.status || null,
+  });
+};
 
 type PrismaOrder = {
   id: number;
@@ -20,7 +26,7 @@ type PrismaOrder = {
 };
 
 
-export async function sendEmail(recepient: string, subject: string, body: string) {
+export async function sendEmail(recepient: string, subject: string, body: string): Promise<boolean> {
   const apiKey = process.env.MAILJET_API_KEY;
   const apiSecret = process.env.MAILJET_API_SECRET;
   const from = process.env.MAIL_FROM;
@@ -39,9 +45,10 @@ export async function sendEmail(recepient: string, subject: string, body: string
         }
       ]
     });
-   // console.log(result);
+    return Boolean(result);
   } catch (err) {
-    console.log(err);
+    logDeliveryError("EMAIL", err);
+    return false;
   }
 }
 
@@ -61,7 +68,6 @@ export function sendSms(recepient: string, subject: string, body: string) {
  * @returns {Promise<Object>} Created notification record.
  */
 export async function createNotification(name: string, recepient: string, remarks = ""): Promise<object> {
-  console.log(name, recepient, remarks);
   try {
     if (!name || !recepient) {
       throw new Error("Both 'name' and 'recepient' are required.");
@@ -77,7 +83,7 @@ export async function createNotification(name: string, recepient: string, remark
 
     return notification;
   } catch (error) {
-    console.error("[NOTIFICATION_CREATE_ERROR]", error);
+    logDeliveryError("NOTIFICATION_CREATE", error);
     throw new Error("Failed to create notification.");
   }
 }
@@ -119,7 +125,6 @@ export async function sendWhatsAppOTP(receivername: string, receiverphone: strin
       }
     }
   });
-  console.log(data);
   let config = {
     method: 'post',
     maxBodyLength: Infinity,
@@ -131,15 +136,13 @@ export async function sendWhatsAppOTP(receivername: string, receiverphone: strin
     },
     data: data
   };
-  console.log(config);
-  axios.request(config)
-    .then((response) => {
-      console.log(response);
-      console.log(JSON.stringify(response.data));
-    })
-    .catch((error) => {
-      console.log(error);
-    });
+  try {
+    const response = await axios.request(config);
+    return response.status >= 200 && response.status < 300;
+  } catch (error) {
+    logDeliveryError("WHATSAPP_OTP", error);
+    return false;
+  }
 }
 
 function normalizeIndianMobile(mobile) {
@@ -209,7 +212,6 @@ export async function sendWhatsAppUserReg(receivername: string, receiverphone: s
       }
     }
   });
-console.log(sendWhatsAppUserReg, _data);
   var config = {
     method: 'post',
     url: process.env.META_URL,
@@ -221,13 +223,13 @@ console.log(sendWhatsAppUserReg, _data);
     data: _data
   };
 
-  axios(config)
-    .then(function (response) {
-      console.log(JSON.stringify(response.data));
-    })
-    .catch(function (error) {
-      console.log(error);
-    });
+  try {
+    const response = await axios(config);
+    return response.status >= 200 && response.status < 300;
+  } catch (error) {
+    logDeliveryError("WHATSAPP_REGISTRATION", error);
+    return false;
+  }
 
 }
 
@@ -273,7 +275,6 @@ export async function sendWhatsAppOrderCreate(receivername: string, receiverphon
       }
     }
   });
-//console.log("datao",_datao);
   var config = {
     method: 'post',
     url: process.env.META_URL,
@@ -285,13 +286,13 @@ export async function sendWhatsAppOrderCreate(receivername: string, receiverphon
     data: _datao
   };
 
-  axios(config)
-    .then(function (response) {
-      console.log(JSON.stringify(response.data));
-    })
-    .catch(function (error) {
-      console.log(error);
-    });
+  try {
+    const response = await axios(config);
+    return response.status >= 200 && response.status < 300;
+  } catch (error) {
+    logDeliveryError("WHATSAPP_ORDER", error);
+    return false;
+  }
 
 }
 
@@ -422,4 +423,3 @@ export function generateApprovedOrderSummaryHTML(order: PrismaOrder,userId: numb
     </div>
   `;
 }
-

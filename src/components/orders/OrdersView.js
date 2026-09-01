@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { OrderEmailTemp } from "../../utils/constants/index";
 import { uploadFiles } from "../../utils/customFunctions/fileUpload";
 import Loader from "../commonComponent/Loader";
+import { getOrderItemPricing, getOrderPricingSummary } from "../../utils/orderPricing";
 
 const OrdersView = ({ id }) => {
     const route = useRouter();
@@ -22,7 +23,6 @@ const OrdersView = ({ id }) => {
         editOrderItem: {},
         orderItemQty: 0,
         orderItemPrice: 0,
-        refreshState: false,
         shippingModel: false,
         shippingDetails: {},
         shippingProductModel: false,
@@ -48,39 +48,30 @@ const OrdersView = ({ id }) => {
         const initial = document.body.classList.contains("dark-only");
         setIsDarkMode(initial);
         fetchProduct();
-    }, [])
-
-    useEffect(() => {
-        const initial = document.body.classList.contains("dark-only");
-        setIsDarkMode(initial);
-        fetchProduct();
-        handleStateChange('refreshState', false);
-    }, [state.refreshState])
+    }, [id])
 
     const handleView = (el) => {
         handleStateChange('productItemDetails', el);
     }
 
-    const fetchProduct = async () => {
+    const fetchProduct = async (preferredOrderId) => {
         let res = await axios.get('/api/orders/filter?userId=' + id, { withCredentials: true });
         if (res.status == 200) {
-            handleStateChange('Orders', res.data.data);
+            const orders = Array.isArray(res.data.data) ? res.data.data : [];
             setTaxData(res.data.tax);
-            handleStateChange("deliveryAgent", res.data.deliveryAgent);
-
-            const currentProductId = state.productItemDetails?.id;
-
-            if (currentProductId) {
-                const updatedProduct = res.data.data.find(el => el.id === currentProductId);
-                if (updatedProduct) {
-                    handleStateChange('productItemDetails', updatedProduct);
-                }
-            }
-
-            if (Object.keys(state.editOrderItem).length > 0) {
-                const filterData = res.data.data.filter(el => el.id === state.editOrderItem?.orderId);
-                handleStateChange('editOrderItem', {});
-            }
+            setState(prev => {
+                const selectedId = Number(preferredOrderId || prev.productItemDetails?.id);
+                const selectedOrder = orders.find(el => Number(el.id) === selectedId)
+                    || orders[0]
+                    || {};
+                return {
+                    ...prev,
+                    Orders: orders,
+                    productItemDetails: selectedOrder,
+                    deliveryAgent: res.data.deliveryAgent || [],
+                    editOrderItem: Object.keys(prev.editOrderItem).length > 0 ? {} : prev.editOrderItem,
+                };
+            });
         }
 
     }
@@ -93,8 +84,7 @@ const OrdersView = ({ id }) => {
             }, { withCredentials: true });
             if (res.status == 200) {
                 alert("Order item updated successfully!");
-                // window.location.reload();
-                handleStateChange('refreshState', true);
+                await fetchProduct(state.productItemDetails?.id);
             }
         } catch (err) {
             console.log('error', err);
@@ -117,7 +107,7 @@ const OrdersView = ({ id }) => {
 
             if (res.status === 200) {
                 alert(`Order ${action.toUpperCase()} successfully!`);
-                handleStateChange('refreshState', true);
+                await fetchProduct(id);
             }
             action == "APPROVED" ? setIsApprove(false) : setIsReject(false);
         } catch (err) {
@@ -126,55 +116,32 @@ const OrdersView = ({ id }) => {
             action == "APPROVED" ? setIsApprove(false) : setIsReject(false);
         }
     };
-    function generateProductDiscount(product, ordId) {
-        const price = Number(product?.price || 0);
-        const snapshot = (Array.isArray(product?.jsonData) ? product.jsonData : [])
-            .find((entry) => Number(entry?.orderId) === Number(ordId)) || {};
-        const discountPercentage = Number(snapshot.discountPercentage || 0);
-        const discountAmount = Number(snapshot.discountAmount ?? (price * discountPercentage / 100));
-        const sellingPrice = Number(snapshot.sellingPrice ?? (price - discountAmount));
-        const taxpercent = Number((taxData || []).find((tax) => Number(tax.id) === Number(product?.tax))?.value || 0);
-        const taxAmount = Number(snapshot.taxAmount ?? (sellingPrice * taxpercent / 100));
-        return {
-            ...snapshot,
-            discountPercentage,
-            discountAmount,
-            sellingPrice,
-            taxpercent,
-            taxAmount,
-            totalPrice: Number(snapshot.totalPrice ?? (sellingPrice + taxAmount)),
-        };
-    }
-
     function generateProductTotalPrice(order) {
-        return (order?.items || []).reduce((total, item) => {
-            const pricing = generateProductDiscount(item.product, order.id);
-            return total + Number(pricing.totalPrice || 0) * Number(item.quantity || 0);
-        }, 0);
+        return getOrderPricingSummary(order, taxData || []).total;
     }
 
     const handleHtmlToPdf1 = async (id) => {
         function generateProductRows(products) {
-            return products.map(p => `
+            return products.map(p => {
+                const pricing = getOrderItemPricing(state.productItemDetails, p, taxData || []);
+                return `
     <tr>
       <td>${p?.product?.name}</td>
       <td>${p?.quantity}</td>
-      <td>₹${p?.product?.price.toFixed(2)}</td>
-      <td>${generateProductDiscount(p.product, id)?.discountPercentage}</td>
-      <td>${(Number(generateProductDiscount(p.product, id)?.discountAmount) * Number(p?.quantity)).toFixed(2)}</td>
-      <td>${generateProductDiscount(p.product, id)?.taxpercent}</td>
-      <td>${(Number(generateProductDiscount(p.product, id)?.taxAmount) * Number(p?.quantity)).toFixed(2)}</td>
-      <td>${Number(generateProductDiscount(p.product, id)?.totalPrice * Number(p?.quantity)).toFixed(2)}</td>
+      <td>₹${pricing.unitPrice.toFixed(2)}</td>
+      <td>${pricing.discountPercentage}</td>
+      <td>${pricing.lineDiscount.toFixed(2)}</td>
+      <td>${pricing.taxPercentage}</td>
+      <td>${pricing.lineTax.toFixed(2)}</td>
+      <td>${pricing.lineTotal.toFixed(2)}</td>
     </tr>
-  `).join("");
+  `;
+            }).join("");
         }
 
         let OrderTemp = OrderEmailTemp;
         let shippingAdds = state.productItemDetails?.shipping.address + ', ' + state.productItemDetails?.shipping?.city + ', ' + state.productItemDetails?.shipping?.country;
-        let subTotal = 0, Total = 0, tax = 0;
-        for (const el of state.productItemDetails?.items) {
-            Total += Number(generateProductDiscount(el.product, id).totalPrice * Number(el.quantity));
-        }
+        const Total = getOrderPricingSummary(state.productItemDetails, taxData || []).total;
         const productRows = generateProductRows(state.productItemDetails?.items);
         const userId = state?.productItemDetails?.user?.id;
         OrderTemp = OrderTemp.replace('@Order', id);
@@ -192,20 +159,21 @@ const OrdersView = ({ id }) => {
     }
 
     const handleHtmlToPdf = async (id, popup = true) => {
-        setIsLoading(true);
-        const res = await axios.get('/api/file/htmlToPdf?orderId=' + id, {
-        }, { withCredentials: true });
-        console.log('response', res);
-        if (res.status == 200) {
-            if (popup) {
+        try {
+            setIsLoading(true);
+            const res = await axios.get('/api/file/htmlToPdf?orderId=' + id, {
+            }, { withCredentials: true });
+            if (res.status == 200 && popup) {
                 alert(res.data?.message);
-                setIsLoading(false);
                 window.open(res?.data?.path, "_blank");
             }
-        } else {
+            return res;
+        } catch (error) {
+            alert(error?.response?.data?.error || "Invoice generation failed. Please try again.");
+            throw error;
+        } finally {
             setIsLoading(false);
         }
-
     }
 
     const handlePayment = (id) => {
@@ -217,13 +185,11 @@ const OrdersView = ({ id }) => {
     }
 
     const handleShipping = async (id) => {
-        if (state.productItemDetails?.invoicepath != null || state.productItemDetails?.invoicepath != '') {
-            handleStateChange('shippingProductModel', true);
-        } else {
+        if (!state.productItemDetails?.invoicepath) {
             await handleHtmlToPdf(id, false);
-            await fetchProduct();
-            handleStateChange('shippingProductModel', true);
+            await fetchProduct(id);
         }
+        handleStateChange('shippingProductModel', true);
     }
     const handleShippingSubmit = async () => {
         if (state.deliveryAgentId == 0) {
@@ -276,7 +242,7 @@ const OrdersView = ({ id }) => {
             if (updateShipping.status === 200) {
                 alert("Shipping process started successfully!");
                 handleStateChange('shippingProductModel', false);
-                fetchProduct();
+                await fetchProduct(state.productItemDetails?.id);
                 setIsLoading(false);
             } else {
                 alert("Failed to upload transport report, please try again!");
@@ -317,7 +283,7 @@ const OrdersView = ({ id }) => {
                 if (orders.status == 200) {
                     alert('Order: ' + state.productItemDetails?.id + " completed successfully!");
                     handleStateChange("deliveryModel", false);
-                    fetchProduct();
+                    await fetchProduct(state.productItemDetails?.id);
                 }
                 setIsLoading(false);
             }
@@ -330,42 +296,87 @@ const OrdersView = ({ id }) => {
             <div>
                 Orders Details
             </div>
-            <div className="d-flex" style={{ width: "100%", height: "100vh" }}>
+            <div className="d-flex" style={{ width: "100%", minHeight: "100vh" }}>
                 {/* Sidebar (Scrollable) */}
                 <div
                     className="d-flex flex-column overflow-auto p-2"
                     style={{
-                        width: "300px",
-                        maxHeight: "100vh",
+                        width: "360px",
+                        minWidth: "320px",
+                        maxHeight: "calc(100vh - 120px)",
                         overflowY: "auto",
                         borderRight: "1px solid #ccc",
                     }}
                 >
                     {state.Orders?.length > 0 ? (
                         state.Orders.map((el, index) => {
-                            const totalPrice = el?.items?.reduce(
-                                (acc, item) => acc + Number(item.price) * Number(item.quantity),
-                                0
-                            );
+                            const isSelected = el.id === state.productItemDetails?.id;
+                            const itemCount = el?.items?.length || 0;
                             return (
-                                <div key={index} className="card mb-3" style={{ width: "100%", backgroundColor: el.id === state.productItemDetails?.id ? '#0c303d' : '', color: el.id === state.productItemDetails?.id ? '#fff' : '' }}>
-                                    <div className="card-body">
-                                        <div className="d-flex justify-content-between">
-                                            <h5 className="card-title">Order ID: {el?.id}</h5>
-                                            <button className="btn btn-outline-primary cursor-pointer" style={{ width: "70px", color: el.id === state.productItemDetails?.id ? '#e8840d' : "#1921e8" }} onClick={() => {
-                                                setState(prev => {
-                                                    return { ...prev, ["shippingModel"]: true, ["shippingDetails"]: el?.shipping }
-                                                })
-                                            }}>Shipping</button>
+                                <div
+                                    key={el?.id || index}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => handleView(el)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter" || event.key === " ") handleView(el);
+                                    }}
+                                    style={{
+                                        width: "100%",
+                                        marginBottom: "12px",
+                                        padding: "14px",
+                                        border: isSelected ? "2px solid #e8840d" : "1px solid #dce5dc",
+                                        borderRadius: "14px",
+                                        backgroundColor: isSelected ? "#0c303d" : "#fff",
+                                        color: isSelected ? "#fff" : "#24352c",
+                                        boxShadow: isSelected ? "0 8px 20px rgba(12,48,61,.18)" : "0 4px 14px rgba(22,43,31,.06)",
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    <div className="d-flex justify-content-between align-items-start gap-2 mb-2">
+                                        <div>
+                                            <div className="fw-bold" style={{ fontSize: "17px", lineHeight: 1.25 }}>Order #{el?.id}</div>
+                                            <small style={{ opacity: .76 }}>
+                                                {el?.createdAt ? new Date(el.createdAt).toLocaleDateString() : "Date unavailable"}
+                                            </small>
                                         </div>
-                                        <h5 className="card-title">Items: {el?.items.length}</h5>
-                                        <p className="card-text">Approved: {el?.approved ? "YES" : "NO"}</p>
-                                        <p className="card-text">Status: {el?.status}</p>
-                                        <p className="card-text">Total Price(RS): {generateProductTotalPrice(el)?.toFixed(2)}</p>
-                                        <p className="card-text">Orders On: {el?.createdAt
-                                            ? new Date(el?.createdAt).toLocaleDateString()
-                                            : "-"}</p>
-                                        <a href="#" className="btn btn-primary btn-sm" onClick={() => handleView(el)} >View</a>
+                                        <span
+                                            className="badge rounded-pill"
+                                            style={{
+                                                backgroundColor: isSelected ? "#fff" : "#eef7ee",
+                                                color: isSelected ? "#0c303d" : "#28743a",
+                                                fontSize: "11px",
+                                            }}
+                                        >
+                                            {el?.status || "PENDING"}
+                                        </span>
+                                    </div>
+                                    <div className="d-flex justify-content-between mb-3" style={{ fontSize: "13px", opacity: .85 }}>
+                                        <span>{itemCount} {itemCount === 1 ? "item" : "items"}</span>
+                                        <strong>₹{generateProductTotalPrice(el)?.toFixed(2)}</strong>
+                                    </div>
+                                    <div className="d-flex gap-2">
+                                        <button
+                                            type="button"
+                                            className={isSelected ? "btn btn-light btn-sm flex-grow-1" : "btn btn-primary btn-sm flex-grow-1"}
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                handleView(el);
+                                            }}
+                                        >
+                                            View details
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline-warning btn-sm"
+                                            disabled={!el?.shipping}
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                setState(prev => ({ ...prev, shippingModel: true, shippingDetails: el?.shipping }));
+                                            }}
+                                        >
+                                            Shipping
+                                        </button>
                                     </div>
                                 </div>
                             );
@@ -377,17 +388,26 @@ const OrdersView = ({ id }) => {
 
                 {/* Main Content (Static) */}
                 <div className="flex-grow-1 p-3">
-                    <div className="w-100 d-flex justify-content-between mb-2">
-                        <div><h4>Order Items Details</h4></div>
-                        <p>Order ID: {state.productItemDetails?.id}</p>
+                    <div
+                        id="selected-order-actions"
+                        className="w-100 d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3 p-3 bg-white border rounded shadow-sm"
+                        style={{ position: "sticky", top: 0, zIndex: 20 }}
+                    >
+                        <div>
+                            <h4 className="mb-1">Order #{state.productItemDetails?.id || "—"}</h4>
+                            <div className="small text-muted">
+                                {state.productItemDetails?.user?.name || "Customer unavailable"}
+                                {state.productItemDetails?.user?.email ? ` · ${state.productItemDetails.user.email}` : ""}
+                            </div>
+                        </div>
                         {
                             Object.keys(state.productItemDetails).length > 0 &&
-                            <div className="d-flex justify-content-end gap-3 pr-3">
-                                {state.productItemDetails?.approved && state.productItemDetails?.status.toUpperCase() === "SHIPPED" && state.productItemDetails?.shipping?.status.toUpperCase() === "SHIPPED" && <button type="button" onClick={() => handleDelivery(state.productItemDetails?.id)} className="btn btn-info">Delivery</button>}
-                                {state.productItemDetails?.approved && state.productItemDetails?.status.toUpperCase() === "PAID" && <button type="button" onClick={() => handleShipping(state.productItemDetails?.id)} className="btn btn-info">Shipping</button>}
-                                {state.productItemDetails?.status.toUpperCase() === "APPROVED" && state.productItemDetails?.payment?.method == "OFF" && state.productItemDetails?.approved && <button type="button" onClick={() => handlePayment(state.productItemDetails?.payment?.id)} className="btn btn-info">Payment Offline</button>}
+                            <div className="d-flex flex-wrap justify-content-end align-items-center gap-2">
+                                {state.productItemDetails?.approved && state.productItemDetails?.status?.toUpperCase() === "SHIPPED" && state.productItemDetails?.shipping?.status?.toUpperCase() === "SHIPPED" && <button type="button" onClick={() => handleDelivery(state.productItemDetails?.id)} className="btn btn-info">Delivery</button>}
+                                {state.productItemDetails?.approved && state.productItemDetails?.status?.toUpperCase() === "PAID" && <button type="button" onClick={() => handleShipping(state.productItemDetails?.id)} className="btn btn-info">Shipping</button>}
+                                {state.productItemDetails?.status?.toUpperCase() === "APPROVED" && state.productItemDetails?.payment?.method == "OFF" && state.productItemDetails?.approved && <button type="button" onClick={() => handlePayment(state.productItemDetails?.payment?.id)} className="btn btn-info">Payment Offline</button>}
 
-                                {state.productItemDetails?.approved ? <span>Invoice : <a className="link-primary fw-semibold" href={`/api/invoice/${state.productItemDetails?.id}`} target="_blank">View</a> <a className="link-secondary fw-semibold" href={`/api/file?file=performa-invoice${state.productItemDetails?.id}.pdf`} target="_blank"> Pdf</a><button type="button" className="btn btn-success" disabled title="disabled" >Approved</button></span> : (state.productItemDetails?.status).toUpperCase() === "PENDING" ? <button type="button" className="btn btn-success" onClick={() => updateOrderStatus(state.productItemDetails?.id, "APPROVED")} disabled={isApprove} >
+                                {state.productItemDetails?.approved ? <span className="d-flex align-items-center gap-2">{state.productItemDetails?.invoicepath ? <>Invoice: <a className="link-primary fw-semibold" href={`/api/invoice/${state.productItemDetails?.id}`} target="_blank" rel="noopener noreferrer">View</a> <a className="link-secondary fw-semibold" href={`/api/file?file=performa-invoice${state.productItemDetails?.id}.pdf`} target="_blank" rel="noopener noreferrer">PDF</a></> : <span className="text-muted small">Invoice unavailable</span>}<button type="button" className="btn btn-success" disabled>Approved</button></span> : state.productItemDetails?.status?.toUpperCase() === "PENDING" ? <button type="button" className="btn btn-success" onClick={() => updateOrderStatus(state.productItemDetails?.id, "APPROVED")} disabled={isApprove} >
                                     {isApprove ? (
                                         <>
                                             <span
@@ -401,7 +421,7 @@ const OrdersView = ({ id }) => {
                                         "Approve"
                                     )}
                                 </button> : ''}
-                                {(state.productItemDetails?.status).toUpperCase() === "REJECTED" ? <button type="button" className="btn btn-danger" disabled >Rejected</button> : (state.productItemDetails?.status).toUpperCase() === "PENDING" && !state.productItemDetails?.approved ? <button type="button" className="btn btn-danger" onClick={() => updateOrderStatus(state.productItemDetails?.id, "REJECTED")} disabled={isReject} >
+                                {state.productItemDetails?.status?.toUpperCase() === "REJECTED" ? <button type="button" className="btn btn-danger" disabled >Rejected</button> : state.productItemDetails?.status?.toUpperCase() === "PENDING" && !state.productItemDetails?.approved ? <button type="button" className="btn btn-danger" onClick={() => updateOrderStatus(state.productItemDetails?.id, "REJECTED")} disabled={isReject} >
                                     {isReject ? (
                                         <>
                                             <span
@@ -415,7 +435,7 @@ const OrdersView = ({ id }) => {
                                         "Reject"
                                     )}
                                 </button> : ''}
-                                {(state.productItemDetails?.approved && ["COMPLETED", "SHIPPED", "PAID"].includes(state.productItemDetails?.status.toUpperCase())) ? <button type="button" className="btn btn-success" title="invoice" onClick={() => handleHtmlToPdf(state.productItemDetails?.id)} >Invoice </button> : ''}
+                                {(state.productItemDetails?.approved && ["COMPLETED", "SHIPPED", "PAID"].includes(state.productItemDetails?.status?.toUpperCase())) ? <button type="button" className="btn btn-success" title="invoice" onClick={() => handleHtmlToPdf(state.productItemDetails?.id)} >Invoice </button> : ''}
                                 {/* {state.productItemDetails?.approved && state.productItemDetails?.status.toUpperCase() === "SHIPPED" && state.productItemDetails?.shipping?.status.toUpperCase() === "SHIPPED" && <a href={state.productItemDetails?.shipping?.assets?.split(',').find(v => v.startsWith('transportReport:'))?.split('transportReport:')[1]} className="btn btn-info">Transport Report</a>} */}
                                 {state.productItemDetails?.approved &&
                                     (state.productItemDetails?.status?.toUpperCase() === "SHIPPED" || state.productItemDetails?.status?.toUpperCase() === "COMPLETED") &&
@@ -473,18 +493,18 @@ const OrdersView = ({ id }) => {
 
                     {state.productItemDetails?.items?.length > 0 ? (
                         state.productItemDetails.items.map((el, index) => {
-                            const quantity = Number(el?.quantity || 0);
-                            const price = Number(el?.product?.price || 0);
-
-                            const amtDetails = generateProductDiscount(el?.product, el.orderId) || {};
+                            const pricing = getOrderItemPricing(state.productItemDetails, el, taxData || []);
+                            const quantity = pricing.quantity;
+                            const price = pricing.unitPrice;
                             const deliveryAgentFilter = state.deliveryAgent?.filter(el => el.id == Number(state.productItemDetails?.deliveryAgent));
                             const {
                                 discountPercentage = 0,
-                                discountAmount = 0,
-                                taxpercent = 0,
-                                taxAmount = 0,
-                                totalPrice = price - discountAmount + taxAmount
-                            } = amtDetails;
+                                lineDiscount = 0,
+                                taxPercentage = 0,
+                                lineTax = 0,
+                                taxableSubtotal = 0,
+                                lineTotal = 0
+                            } = pricing;
 
                             return (
                                 <div key={index} className="card shadow-sm mb-4 border-0">
@@ -508,11 +528,11 @@ const OrdersView = ({ id }) => {
                                             </div>
                                             <div>
                                                 <strong>Payment:</strong>{" "}
-                                                {state.productItemDetails?.payment?.status.toUpperCase()}
+                                                {state.productItemDetails?.payment?.status?.toUpperCase() || "NOT SET"}
                                             </div>
                                             <div>
                                                 <strong>Shipping:</strong>{" "}
-                                                {state.productItemDetails?.shipping?.status.toUpperCase()}
+                                                {state.productItemDetails?.shipping?.status?.toUpperCase() || "NOT SET"}
                                             </div>
                                             <div>
                                                 <strong>Delivery Agent: {deliveryAgentFilter.length > 0 ? deliveryAgentFilter[0]?.name : "NA"}</strong>{" "}
@@ -546,12 +566,12 @@ const OrdersView = ({ id }) => {
                                             <div className="col-md-6">
                                                 <div className="p-3 rounded ">
                                                     <p><strong>Discount:</strong> {discountPercentage}%</p>
-                                                    <p><strong>Discount Amount:</strong> ₹{(discountAmount * quantity).toFixed(2)}</p>
+                                                    <p><strong>Discount Amount:</strong> ₹{lineDiscount.toFixed(2)}</p>
 
-                                                    <p><strong>Tax:</strong> {taxpercent}%</p>
-                                                    <p><strong>Tax Amount:</strong> ₹{(taxAmount * quantity).toFixed(2)}</p>
+                                                    <p><strong>Tax:</strong> {taxPercentage}%</p>
+                                                    <p><strong>Tax Amount:</strong> ₹{lineTax.toFixed(2)}</p>
 
-                                                    <p><strong>Subtotal:</strong> ₹{((price - discountAmount) * quantity).toFixed(2)}</p>
+                                                    <p><strong>Subtotal:</strong> ₹{taxableSubtotal.toFixed(2)}</p>
                                                 </div>
                                             </div>
                                         </div>
@@ -559,12 +579,12 @@ const OrdersView = ({ id }) => {
                                         {/* Footer */}
                                         <div className="d-flex justify-content-between align-items-center mt-4">
                                             <h3 className="fw-bold text-success">
-                                                Total: ₹{(quantity * totalPrice).toFixed(2)}
+                                                Total: ₹{lineTotal.toFixed(2)}
                                             </h3>
 
                                             {/* Edit Button */}
                                             {/* Uncomment if needed */}
-                                            {!state.productItemDetails?.approved && state.productItemDetails?.status.toUpperCase() === "PENDING" &&
+                                            {!state.productItemDetails?.approved && state.productItemDetails?.status?.toUpperCase() === "PENDING" &&
                                                 (state.editOrderItem?.id !== el.id ? (
                                                     <button
                                                         className="btn btn-outline-primary btn-sm"
@@ -670,7 +690,7 @@ const OrdersView = ({ id }) => {
                             }
                         /> */}
                         <div className="d-flex justify-content-end">
-                            <a href={state.productItemDetails?.invoicepath} target="_blank" id="invoicePdf" >Invoice</a>
+                            {state.productItemDetails?.invoicepath ? <a href={state.productItemDetails.invoicepath} target="_blank" rel="noopener noreferrer" id="invoicePdf">Invoice</a> : <span className="text-muted">Not available</span>}
                         </div>
                     </div>
 
