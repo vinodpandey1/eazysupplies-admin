@@ -76,37 +76,26 @@ export async function GET(request) {
     let total;
 
     if (isStorefrontRequest) {
-      // Product imports can contain multiple database rows for the same SKU.
-      // Build the storefront page from the globally de-duplicated, sorted ID
-      // list so a duplicate cannot reappear on a later page and pagination
-      // totals describe what shoppers can actually see.
-      const productKeys = await prisma.product.findMany({
+      // SKU is a classification/HSN value in this catalogue and is shared by
+      // multiple legitimate products. Paginate every matching product by its
+      // unique database ID so the storefront count matches the active rows.
+      let productKeys = await prisma.product.findMany({
         where,
-        select: { id: true, sku: true, price: true, categoryId: true },
+        select: { id: true, price: true, categoryId: true },
         orderBy: { [sortField]: sortDirection },
       });
-      const seenProductKeys = new Set();
-      let uniqueProductKeys = productKeys.reduce((unique, product) => {
-        const normalizedSku = product.sku?.trim()?.toLowerCase();
-        const key = normalizedSku || `id:${product.id}`;
-        if (!seenProductKeys.has(key)) {
-          seenProductKeys.add(key);
-          unique.push(product);
-        }
-        return unique;
-      }, []);
       // Customer offers may differ by category, so a price sort has to use the
       // server-computed effective price rather than the base catalogue price.
       if (offerContext.userId && sortField === "price") {
         const direction = sortDirection === "desc" ? -1 : 1;
-        uniqueProductKeys = uniqueProductKeys.sort((a, b) => {
+        productKeys = productKeys.sort((a, b) => {
           const aPrice = calculateCustomerPrice(a, offerContext).effectivePrice;
           const bPrice = calculateCustomerPrice(b, offerContext).effectivePrice;
           return (aPrice - bPrice || a.id - b.id) * direction;
         });
       }
-      const uniqueProductIds = uniqueProductKeys.map((product) => product.id);
-      const pageIds = uniqueProductIds.slice((page - 1) * perPage, page * perPage);
+      const productIds = productKeys.map((product) => product.id);
+      const pageIds = productIds.slice((page - 1) * perPage, page * perPage);
       const pageProducts = pageIds.length
         ? await prisma.product.findMany({
             where: { id: { in: pageIds } },
@@ -115,7 +104,7 @@ export async function GET(request) {
         : [];
       const productById = new Map(pageProducts.map((product) => [product.id, product]));
       products = pageIds.map((id) => productById.get(id)).filter(Boolean);
-      total = uniqueProductIds.length;
+      total = productIds.length;
     } else {
       products = await prisma.product.findMany({
         where,
