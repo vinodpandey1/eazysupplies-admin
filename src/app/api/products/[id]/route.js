@@ -1,17 +1,32 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { authenticate } from "../../utils/jwt";
+import {
+  applyCustomerPrice,
+  loadCustomerOfferContext,
+  pricingHeaders,
+} from "../../utils/offerPricing";
 
 const prisma = new PrismaClient();
 export async function GET(request, { params }) {
-try {
+  try {
     const id = (await params).id;
-const product = await prisma.product.findUnique({ where: { id: Number(id) },
-include: { category: true, brand: true },
-});
-return NextResponse.json(product);
-} catch (Error) {
-    console.log(Error);
-}
+    const payload = await authenticate(request);
+    const offerContext = await loadCustomerOfferContext(prisma, payload?.userId);
+    const product = await prisma.product.findUnique({
+      where: { id: Number(id) },
+      include: { category: true, brand: true },
+    });
+    return NextResponse.json(applyCustomerPrice(product, offerContext), {
+      headers: pricingHeaders(offerContext),
+    });
+  } catch (error) {
+    console.error("GET /products/[id] error:", error);
+    return NextResponse.json(
+      { error: "Unable to load product." },
+      { status: 500, headers: pricingHeaders() },
+    );
+  }
 }
 
 export async function DELETE(request, { params }) {

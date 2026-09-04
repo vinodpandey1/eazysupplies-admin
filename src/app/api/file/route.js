@@ -53,14 +53,15 @@ function contentType(fileName) {
 }
 
 async function canAccessInvoice(request, fileName, payload) {
-  if (await verifyAdmin(request)) return true;
   const match = path.basename(fileName).match(/^performa-invoice(\d+)\.pdf$/i);
   if (!match || !payload?.userId) return false;
-  const order = await prisma.order.findFirst({
-    where: { id: Number(match[1]), userId: Number(payload.userId) },
-    select: { id: true },
+  const order = await prisma.order.findUnique({
+    where: { id: Number(match[1]) },
+    select: { userId: true, approved: true, invoicepath: true },
   });
-  return Boolean(order);
+  if (!order?.approved || !order.invoicepath) return false;
+  if (path.basename(order.invoicepath) !== path.basename(fileName)) return false;
+  return (await verifyAdmin(request)) || order.userId === Number(payload.userId);
 }
 
 export async function GET(request) {

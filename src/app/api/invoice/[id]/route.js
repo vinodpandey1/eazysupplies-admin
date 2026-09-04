@@ -14,11 +14,17 @@ export async function GET(request , { params }) {
      }
      const order = await prisma.order.findUnique({
        where: { id: Number(id) },
-       select: { userId: true },
+       select: { userId: true, approved: true, invoicepath: true },
      });
      if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
      if (order.userId !== Number(payload.userId) && !(await verifyAdmin(request))) {
        return NextResponse.json({ error: "Invoice access denied" }, { status: 403 });
+     }
+     if (!order.approved || !order.invoicepath) {
+       return NextResponse.json(
+         { error: "Invoice will be available after the order is approved" },
+         { status: 409, headers: { "Cache-Control": "private, no-store" } }
+       );
      }
 
     const { html } = await handleHtmlFromOrder(Number(id));

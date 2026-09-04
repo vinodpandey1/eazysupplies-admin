@@ -10,9 +10,10 @@ const prisma = new PrismaClient();
 async function generateOrderPdf(orderId) {
   const order = await prisma.order.findUnique({
     where: { id: Number(orderId) },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, approved: true },
   });
   if (!order) return null;
+  if (!order.approved) return { pendingApproval: true };
 
   const { html } = await handleHtmlFromOrder(Number(orderId));
   const browser = await puppeteer.launch({
@@ -64,6 +65,12 @@ async function handleRequest(request, orderId) {
   }
   const result = await generateOrderPdf(Number(orderId));
   if (!result) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  if (result.pendingApproval) {
+    return NextResponse.json(
+      { error: "Invoice can only be generated after the order is approved" },
+      { status: 409 }
+    );
+  }
   return NextResponse.json({ message: "PDF generated successfully", path: result.filePath });
 }
 

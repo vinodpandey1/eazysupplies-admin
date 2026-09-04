@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { authenticate, verifyAdmin } from "../utils/jwt";
 import { MESSAGES } from "../utils/statusConstant";
+import {
+  applyCustomerPrices,
+  calculateCustomerPrice,
+  loadCustomerOfferContext,
+  pricingHeaders,
+} from "../utils/offerPricing";
 const prisma = new PrismaClient();
 
 // export async function GET() {
@@ -13,6 +19,9 @@ const prisma = new PrismaClient();
 
 export async function GET(request) {
   try {
+    const payload = await authenticate(request);
+    const offerContext = await loadCustomerOfferContext(prisma, payload?.userId);
+    const responseHeaders = pricingHeaders(offerContext);
     const { searchParams } = new URL(request.url);
     const id = Number(searchParams.get("productId"));
     if (id) {
@@ -20,7 +29,14 @@ export async function GET(request) {
         where: { id },
         include: { category: true, brand: true },
       });
-      return NextResponse.json({ data: product || [] }, { status: 200 });
+      const [pricedProduct] = applyCustomerPrices(
+        product ? [product] : [],
+        offerContext,
+      );
+      return NextResponse.json(
+        { data: pricedProduct || [] },
+        { status: 200, headers: responseHeaders },
+      );
     }
 
     const parseIds = (value) => value?.split(",").map(Number).filter(Number.isInteger);
@@ -66,19 +82,30 @@ export async function GET(request) {
       // totals describe what shoppers can actually see.
       const productKeys = await prisma.product.findMany({
         where,
-        select: { id: true, sku: true },
+        select: { id: true, sku: true, price: true, categoryId: true },
         orderBy: { [sortField]: sortDirection },
       });
       const seenProductKeys = new Set();
-      const uniqueProductIds = productKeys.reduce((ids, product) => {
+      let uniqueProductKeys = productKeys.reduce((unique, product) => {
         const normalizedSku = product.sku?.trim()?.toLowerCase();
         const key = normalizedSku || `id:${product.id}`;
         if (!seenProductKeys.has(key)) {
           seenProductKeys.add(key);
-          ids.push(product.id);
+          unique.push(product);
         }
-        return ids;
+        return unique;
       }, []);
+      // Customer offers may differ by category, so a price sort has to use the
+      // server-computed effective price rather than the base catalogue price.
+      if (offerContext.userId && sortField === "price") {
+        const direction = sortDirection === "desc" ? -1 : 1;
+        uniqueProductKeys = uniqueProductKeys.sort((a, b) => {
+          const aPrice = calculateCustomerPrice(a, offerContext).effectivePrice;
+          const bPrice = calculateCustomerPrice(b, offerContext).effectivePrice;
+          return (aPrice - bPrice || a.id - b.id) * direction;
+        });
+      }
+      const uniqueProductIds = uniqueProductKeys.map((product) => product.id);
       const pageIds = uniqueProductIds.slice((page - 1) * perPage, page * perPage);
       const pageProducts = pageIds.length
         ? await prisma.product.findMany({
@@ -97,6 +124,7 @@ export async function GET(request) {
       });
       total = products.length;
     }
+    products = applyCustomerPrices(products, offerContext);
     const tax = await prisma.tax.findMany();
 
     const allSupplierIds = products
@@ -133,7 +161,10 @@ export async function GET(request) {
     });
 
     if (!isStorefrontRequest) {
-      return NextResponse.json({ data: productsWithSuppliers, tax }, { status: 200 });
+      return NextResponse.json(
+        { data: productsWithSuppliers, tax },
+        { status: 200, headers: responseHeaders },
+      );
     }
 
     return NextResponse.json({
@@ -142,9 +173,13 @@ export async function GET(request) {
       total,
       per_page: perPage,
       data: productsWithSuppliers,
-    });
+    }, { headers: responseHeaders });
   } catch (err) {
-    return NextResponse.json({ error: MESSAGES.SERVER_ERROR }, { status: 500 });
+    console.error("GET /products error:", err);
+    return NextResponse.json(
+      { error: MESSAGES.SERVER_ERROR },
+      { status: 500, headers: pricingHeaders() },
+    );
   }
 }
 

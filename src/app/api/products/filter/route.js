@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
+import { authenticate } from "../../utils/jwt";
+import {
+  applyCustomerPrices,
+  loadCustomerOfferContext,
+  pricingHeaders,
+} from "../../utils/offerPricing";
 
 const prisma = new PrismaClient();
 
 export async function GET(request) {
   try {
+    const payload = await authenticate(request);
+    const offerContext = await loadCustomerOfferContext(prisma, payload?.userId);
     const { searchParams } = new URL(request.url);
     const useSlug = searchParams.get("slug") === "y";
     let items = [];
@@ -89,11 +97,20 @@ export async function GET(request) {
     }
 
     // Deduplicate final product list
-    const productList = removeDuplicatesById(items);
+    const productList = applyCustomerPrices(
+      removeDuplicatesById(items),
+      offerContext,
+    );
 
-    return NextResponse.json({ items: productList });
+    return NextResponse.json(
+      { items: productList },
+      { headers: pricingHeaders(offerContext) },
+    );
   } catch (error) {
     console.error("GET /products error:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500, headers: pricingHeaders() },
+    );
   }
 }

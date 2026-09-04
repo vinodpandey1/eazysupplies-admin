@@ -8,17 +8,33 @@ import { generateInvoicePdf } from "../utils/pdfUtils";
 import { convertDate, calcDate } from "../utils/dateUtils";
 import { hashSync } from "bcryptjs";
 import { createHash, randomUUID } from "crypto";
+import {
+  calculateCustomerPrice,
+  findApplicableOffer,
+  loadCustomerOfferContext,
+} from "../utils/offerPricing";
 
 const prisma = new PrismaClient();
 const NO_STORE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0, must-revalidate",
 };
+const QUOTE_KEY = "_pricingQuote";
+const ALLOWED_INITIAL_PAYMENT_METHODS = new Set([
+  "CREDIT_CARD",
+  "NB",
+  "OFF",
+  "ONLINE",
+  "OFFLINE",
+]);
 const roundMoney = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
-const csvHasId = (value, id) => String(value || "")
-  .split(",")
-  .map((entry) => entry.trim())
-  .filter(Boolean)
-  .includes(String(id));
+const clientJsonObject = (value) =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : { clientData: value ?? null };
+const quoteFromOrder = (order) => {
+  const quote = order?.jsonData?.[QUOTE_KEY];
+  return quote?.state === "QUOTED" && Array.isArray(quote.items) ? quote : null;
+};
 const safeUserSelect = {
   id: true,
   name: true,
@@ -112,7 +128,30 @@ export async function GET(request) {
 // 📌 POST /api/orders
 export async function POST(request) {
   try {
-    const authenticatedPayload = await authenticate(request);
+    const tokenPayload = await authenticate(request);
+    let authenticatedPayload = null;
+    if (tokenPayload?.userId) {
+      const activeUser = await prisma.user.findFirst({
+        where: {
+          id: Number(tokenPayload.userId),
+          status: true,
+          deleted: false,
+        },
+        select: safeUserSelect,
+      });
+      if (!activeUser) {
+        return NextResponse.json(
+          { error: "Your account is inactive or no longer available. Please sign in again." },
+          { status: 401, headers: NO_STORE_HEADERS },
+        );
+      }
+      authenticatedPayload = {
+        ...tokenPayload,
+        userId: activeUser.id,
+        name: activeUser.name,
+        email: activeUser.email,
+      };
+    }
     const body = await request.json();
     const { shipping, payment, jsonData, guest } = body;
     let payload = authenticatedPayload;
@@ -219,11 +258,31 @@ export async function POST(request) {
     if (!requestedItems.length) {
       return NextResponse.json({ error: "Your cart is empty." }, { status: 400 });
     }
+    const rawProductIds = requestedItems.map((item) => Number(item.productId));
+    if (rawProductIds.some((id) => !Number.isInteger(id) || id < 1)) {
+      return NextResponse.json(
+        { error: "One or more cart products are invalid." },
+        { status: 400, headers: NO_STORE_HEADERS },
+      );
+    }
+    if (new Set(rawProductIds).size !== rawProductIds.length) {
+      return NextResponse.json(
+        { error: "Duplicate products were found in the cart. Please refresh the cart and try again." },
+        { status: 400, headers: NO_STORE_HEADERS },
+      );
+    }
     const requiredAddressFields = ["address", "city", "postalCode", "country"];
     if (!shipping || requiredAddressFields.some((field) => !String(shipping[field] || "").trim())) {
       return NextResponse.json({ error: "A complete shipping address is required." }, { status: 400 });
     }
-    const productIds = [...new Set(requestedItems.map((item) => Number(item.productId)))];
+    const productIds = rawProductIds;
+    const paymentMethod = payment ? String(payment.method || "").trim().toUpperCase() : null;
+    if (payment && !ALLOWED_INITIAL_PAYMENT_METHODS.has(paymentMethod)) {
+      return NextResponse.json(
+        { error: "A supported payment method is required." },
+        { status: 400, headers: NO_STORE_HEADERS },
+      );
+    }
 
     let order;
     try {
@@ -238,19 +297,27 @@ export async function POST(request) {
       });
       const products = await tx.product.findMany({ where: { id: { in: productIds }, status: true } });
       const productsById = new Map(products.map((product) => [product.id, product]));
-      const items = requestedItems.map((item) => {
+      // Customer offers are an authenticated benefit. Guest checkout can
+      // resolve an existing account by email/phone, but that must not be enough
+      // to claim the account's private pricing.
+      const offerContext = await loadCustomerOfferContext(
+        tx,
+        authenticatedPayload?.userId,
+      );
+      const pricedItems = requestedItems.map((item) => {
         const product = productsById.get(Number(item.productId));
         const quantity = Number(item.quantity);
         if (!product || !Number.isInteger(quantity) || quantity < 1) throw new Error("INVALID_ITEM");
         if (quantity > product.stock) throw new Error(`OUT_OF_STOCK:${product.name}:${product.stock}`);
+        const customerPrice = calculateCustomerPrice(product, offerContext);
         const displayedUnitPrice = Number(item.price);
         if (
           Number.isFinite(displayedUnitPrice) &&
-          Math.abs(displayedUnitPrice - Number(product.price)) > 0.009
+          Math.abs(displayedUnitPrice - customerPrice.effectivePrice) > 0.009
         ) {
           const pricingError = new Error("PRICE_CHANGED");
           pricingError.productName = product.name;
-          pricingError.currentPrice = Number(product.price);
+          pricingError.currentPrice = customerPrice.effectivePrice;
           throw pricingError;
         }
         return {
@@ -258,21 +325,57 @@ export async function POST(request) {
           quantity,
           backlogquantity: Number(item.backlogquantity) || 0,
           price: product.price,
+          pricingSnapshot: {
+            productId: product.id,
+            name: product.name || "Product",
+            quantity,
+            price: customerPrice.regularPrice,
+            discountPercentage: customerPrice.discountPercentage,
+            discountAmount: customerPrice.discountAmount,
+            sellingPrice: customerPrice.effectivePrice,
+            taxPercentage: 0,
+            taxAmount: 0,
+            totalPrice: roundMoney(customerPrice.effectivePrice * quantity),
+            offerId: customerPrice.offer?.id || null,
+            offerName: customerPrice.offer?.name || null,
+          },
         };
       });
-      const amount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      const orderSnapshots = pricedItems.map((item) => item.pricingSnapshot);
+      const items = pricedItems.map(({ pricingSnapshot, ...item }) => item);
+      const amount = roundMoney(
+        orderSnapshots.reduce(
+          (sum, item) => sum + Number(item.totalPrice || 0),
+          0,
+        ),
+      );
 
       const createdOrder = await tx.order.create({
         data: {
           userId: Number(payload.userId),
-          jsonData,
+          // Keep a non-payable quote separate from jsonOrderData. The BenePay
+          // flow treats jsonOrderData as the approved amount, so it must remain
+          // empty until an administrator approves and freezes the order.
+          jsonData: {
+            ...clientJsonObject(jsonData),
+            [QUOTE_KEY]: {
+              version: 1,
+              state: "QUOTED",
+              calculatedAt: new Date().toISOString(),
+              subtotal: amount,
+              items: orderSnapshots,
+            },
+          },
           items: { create: items },
           shipping: shipping ? { create: shipping } : undefined,
           payment: payment ? {
             create: {
-              ...payment,
-              userId: Number(payment.userId || payload.userId),
+              userId: Number(payload.userId),
               amount,
+              method: paymentMethod,
+              status: "PENDING",
+              transectionid: null,
+              file: null,
             },
           } : undefined,
         },
@@ -318,14 +421,25 @@ export async function POST(request) {
       throw transactionError;
     }
 
-    const itemsText = order.items
+    const quote = quoteFromOrder(order);
+    const priceByProduct = new Map(
+      (quote?.items || []).map((item) => [Number(item.productId), item]),
+    );
+    const notificationOrder = {
+      ...order,
+      items: order.items.map((item) => ({
+        ...item,
+        price: Number(priceByProduct.get(Number(item.productId))?.sellingPrice ?? item.price),
+      })),
+    };
+    const itemsText = notificationOrder.items
       .map((item) => {
-        const lineTotal = item.price * item.quantity;
+        const lineTotal = Number(item.price) * item.quantity;
         return `${item.product.name} × ${item.quantity} = ₹${lineTotal.toFixed(2)}`;
       })
       .join('\n');
 
-    const orderhtml = generateOrderSummaryHTML(order, payload.name);
+    const orderhtml = generateOrderSummaryHTML(notificationOrder, payload.name);
     const deliveryResults = await Promise.allSettled([
       sendEmail(payload.email, "Order Created with " + order.id, orderhtml),
       sendWhatsAppOrderCreate(order?.user?.name, order?.user?.countryCode + order?.user?.phone, order.id, "Status : Created", itemsText),
@@ -359,6 +473,7 @@ export async function POST(request) {
 }
 
 export async function PUT(request) {
+  let approvalClaim = null;
   try {
     const body = await request.json();
     const { id, status, approved = false } = body;
@@ -385,21 +500,80 @@ export async function PUT(request) {
         if (!orders) {
           return NextResponse.json({ error: "Order not found" }, { status: 404 });
         }
+        if (orders.approved) {
+          return NextResponse.json(
+            { message: "Order is already approved", order: orders },
+            { status: 200, headers: NO_STORE_HEADERS },
+          );
+        }
+        if (orders.status === "REJECTED") {
+          return NextResponse.json(
+            { error: "A rejected order cannot be approved." },
+            { status: 409, headers: NO_STORE_HEADERS },
+          );
+        }
+
+        // Claim approval before PDF generation. This makes repeated or
+        // concurrent clicks one-way/idempotent without exposing an approved
+        // order until its immutable snapshot and invoice are ready.
+        const claimed = await prisma.order.updateMany({
+          where: {
+            id: Number(id),
+            approved: false,
+            status: { notIn: ["REJECTED", "APPROVING"] },
+          },
+          data: { status: "APPROVING" },
+        });
+        if (claimed.count !== 1) {
+          const current = await prisma.order.findUnique({
+            where: { id: Number(id) },
+            include: orderInclude,
+          });
+          if (current?.approved) {
+            return NextResponse.json(
+              { message: "Order is already approved", order: current },
+              { status: 200, headers: NO_STORE_HEADERS },
+            );
+          }
+          return NextResponse.json(
+            { error: current?.status === "APPROVING" ? "Order approval is already in progress." : "Order cannot be approved." },
+            { status: 409, headers: NO_STORE_HEADERS },
+          );
+        }
+        approvalClaim = { id: Number(id), previousStatus: orders.status };
+
         const [offers, taxes] = await Promise.all([
           prisma.offers.findMany({
-            orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+            orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
           }),
           prisma.tax.findMany(),
         ]);
         const taxById = new Map(taxes.map((tax) => [Number(tax.id), Number(tax.value || 0)]));
+        const checkoutQuote = quoteFromOrder(orders);
         const orderSnapshots = orders.items.map((item) => {
-          const applicableOffer = offers.find((offer) =>
-            csvHasId(offer.userId, orders.userId) &&
-            csvHasId(offer.categoryId, item.product?.categoryId)
+          const checkoutSnapshot = checkoutQuote
+            ? checkoutQuote.items.find(
+                (snapshot) => Number(snapshot?.productId) === Number(item.productId),
+              )
+            : null;
+          const applicableOffer = findApplicableOffer(
+            offers,
+            orders.userId,
+            item.product?.categoryId,
           );
           const unitPrice = Math.max(Number(item.price || 0), 0);
           const quantity = Math.max(Number(item.quantity || 0), 0);
-          const discountPercentage = Math.min(Math.max(Number(applicableOffer?.discount || 0), 0), 100);
+          const discountPercentage = Math.min(
+            Math.max(
+              Number(
+                checkoutSnapshot?.discountPercentage ??
+                  applicableOffer?.discount ??
+                  0,
+              ),
+              0,
+            ),
+            100,
+          );
           const discountAmount = roundMoney(unitPrice * discountPercentage / 100);
           const sellingPrice = roundMoney(unitPrice - discountAmount);
           const taxPercentage = Number(taxById.get(Number(item.product?.tax)) || 0);
@@ -416,6 +590,12 @@ export async function PUT(request) {
             taxPercentage,
             taxAmount,
             totalPrice: roundMoney((sellingPrice + taxAmount) * quantity),
+            offerId: checkoutSnapshot
+              ? checkoutSnapshot.offerId ?? null
+              : applicableOffer?.id ?? null,
+            offerName: checkoutSnapshot
+              ? checkoutSnapshot.offerName ?? null
+              : applicableOffer?.name ?? null,
           };
         });
         const snapshotGrandTotal = roundMoney(
@@ -456,13 +636,24 @@ export async function PUT(request) {
         // invoice link can become visible to either the customer or admin.
         await generateInvoicePdf(orders.id, invoiceData);
 
+        const approvedJsonData = checkoutQuote
+          ? {
+              ...clientJsonObject(orders.jsonData),
+              [QUOTE_KEY]: {
+                ...checkoutQuote,
+                state: "APPROVED",
+                approvedAt: new Date().toISOString(),
+              },
+            }
+          : orders.jsonData;
         const [result] = await prisma.$transaction([
           prisma.order.update({
             where: { id: Number(id) },
             data: {
-              status,
+              status: "APPROVED",
               approved: true,
               jsonOrderData: orderSnapshots,
+              jsonData: approvedJsonData,
             },
           }),
           prisma.notification.create({
@@ -481,6 +672,7 @@ export async function PUT(request) {
             data: { amount: snapshotGrandTotal },
           }),
         ]);
+        approvalClaim = null;
         const orderhtml = generateApprovedOrderSummaryHTML(orders, Number(orders.userId), orders?.user?.name);
         void Promise.allSettled([
           sendEmail(orders?.user?.email, "Order Approved with " + result.id, orderhtml),
@@ -495,6 +687,24 @@ export async function PUT(request) {
         if (!order) {
           return NextResponse.json({ msg: "Order details not found!" }, { status: 404 });
         }
+        if (order.approved) {
+          return NextResponse.json(
+            { error: "An approved order cannot be rejected." },
+            { status: 409, headers: NO_STORE_HEADERS },
+          );
+        }
+        if (order.status === "REJECTED") {
+          return NextResponse.json(
+            { msg: "Rejected" },
+            { status: 200, headers: NO_STORE_HEADERS },
+          );
+        }
+        if (order.status === "APPROVING") {
+          return NextResponse.json(
+            { error: "Order approval is currently in progress." },
+            { status: 409, headers: NO_STORE_HEADERS },
+          );
+        }
         await prisma.order.update({ where: { id: Number(id) }, data:{ status : status} });
         return NextResponse.json({msg: "Rejected"}, { status: 200 });
       } else {
@@ -502,11 +712,26 @@ export async function PUT(request) {
       }
     }
     return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  } catch (Error) {
-    console.log(Error);
+  } catch (error) {
+    if (approvalClaim) {
+      await prisma.order.updateMany({
+        where: {
+          id: approvalClaim.id,
+          approved: false,
+          status: "APPROVING",
+        },
+        data: {
+          status: approvalClaim.previousStatus,
+          invoicepath: null,
+        },
+      }).catch((rollbackError) => {
+        console.error("Unable to release failed approval claim:", rollbackError);
+      });
+    }
+    console.log(error);
     return NextResponse.json(
       { error: MESSAGES.SERVER_ERROR },
-      { status: 500 }
+      { status: 500, headers: NO_STORE_HEADERS }
     );
   }
 }
