@@ -10,6 +10,7 @@ const AllUsers = () => {
     const [taxData, setTaxData] = useState([]);
     const [supplierData, setSupplierData] = useState([]);
     const [refreshState, setRefeshState] = useState(false);
+    const [deletingId, setDeletingId] = useState(null);
     const [state, setState] = useState({
         name: "all",
         type: "all",
@@ -73,8 +74,26 @@ const AllUsers = () => {
         route.push('/product/edit/' + id);
     };
 
-    const handleDelete = () => {
+    const handleDelete = async (id, name) => {
+        if (!confirm(`Delete product "${name}"? This action cannot be undone.`)) {
+            return;
+        }
 
+        setDeletingId(id);
+        try {
+            await axios.delete(`/api/products/${id}`, { withCredentials: true });
+            setProducts((currentProducts) =>
+                currentProducts.filter((product) => product.id !== id)
+            );
+            alert(`Product "${name}" was deleted successfully.`);
+        } catch (error) {
+            alert(
+                error?.response?.data?.error ||
+                "Unable to delete this product. Please try again."
+            );
+        } finally {
+            setDeletingId(null);
+        }
     };
 
     return (
@@ -268,7 +287,14 @@ const AllUsers = () => {
                                             <div className="d-flex gap-2">
                                                 {/* <button onClick={() => handleView(product.id)} style={{ padding: "4px 6px", fontSize: "12px" }} className="btn btn-warning">View</button> */}
                                                 <button onClick={() => handleEdit(product.id)} style={{ padding: "4px 6px", fontSize: "12px" }} className="btn btn-warning">Edit</button>
-                                                <button onClick={() => handleDelete(product.id)} style={{ padding: "4px 6px", fontSize: "12px" }} className="btn btn-danger">Delete</button>
+                                                <button
+                                                    onClick={() => handleDelete(product.id, product.name)}
+                                                    style={{ padding: "4px 6px", fontSize: "12px" }}
+                                                    className="btn btn-danger"
+                                                    disabled={deletingId !== null}
+                                                >
+                                                    {deletingId === product.id ? "Deleting..." : "Delete"}
+                                                </button>
                                             </div>
                                         </td>
                                         <td className="border px-4 py-2">{product.sku}</td>
