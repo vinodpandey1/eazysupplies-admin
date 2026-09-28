@@ -1,5 +1,5 @@
 import { Form, Formik } from "formik";
-import { useContext, useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import FormBtn from "../../elements/buttons/FormBtn";
 import CategoryContext from "../../helper/categoryContext";
 import request from "../../utils/axiosUtils";
@@ -33,6 +33,7 @@ const CategoryNewForm = ({ setResetData, updateId, loading, type, buttonName }) 
   const [taxData, setTaxData] = useState([]);
   const [productData, setProductData] = useState({});
   const [supplierData, setSupplierData] = useState([]);
+  const submissionInFlight = useRef(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -68,7 +69,11 @@ const CategoryNewForm = ({ setResetData, updateId, loading, type, buttonName }) 
   }
 
   if (updateId && isLoading) return <Loader />;
-  const handleSubmit = async (values) => {
+  const handleSubmit = async (values, { setSubmitting }) => {
+    if (submissionInFlight.current) return;
+
+    submissionInFlight.current = true;
+    setSubmitting(true);
     try {
       if (brandId == 0 || categoryId == 0) {
         alert('brand or category is missing');
@@ -158,6 +163,9 @@ const CategoryNewForm = ({ setResetData, updateId, loading, type, buttonName }) 
     } catch (err) {
       console.log('.........', err)
       alert('something went wrong, please try again!');
+    } finally {
+      submissionInFlight.current = false;
+      setSubmitting(false);
     }
 
   }
@@ -215,14 +223,9 @@ const CategoryNewForm = ({ setResetData, updateId, loading, type, buttonName }) 
                 // categoryId: roleIdSchema,
                 //tags: nameSchema
               })}
-              onSubmit={(values, helpers) => {
-                // setResetData && setResetData(true);
-                // router.push(`/category`);
-                handleSubmit(values);
-                 console.log('values', values);
-              }}
+              onSubmit={handleSubmit}
             >
-              {({ setFieldValue, values, errors }) => (
+              {({ setFieldValue, values, errors, isSubmitting }) => (
                 <Form className="theme-form theme-form-2 mega-form">
                   <Row>
                     <SimpleInputField
@@ -376,7 +379,7 @@ const CategoryNewForm = ({ setResetData, updateId, loading, type, buttonName }) 
                       ]}
                     />
 
-                    <FormBtn loading={loading} buttonName={buttonName} />
+                    <FormBtn loading={loading || isSubmitting} buttonName={buttonName} />
                   </Row>
                 </Form>
               )}
